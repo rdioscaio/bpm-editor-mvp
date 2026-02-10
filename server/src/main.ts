@@ -6,10 +6,32 @@ async function bootstrap() {
   
   // CORS - Origens permitidas (vem de variável de ambiente)
   const corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:5173';
-  const allowedOrigins = corsOrigin.split(',').map(o => o.trim());
+  const allowedOrigins = corsOrigin
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  const originMatchers = allowedOrigins.map((origin) => {
+    if (!origin.includes('*')) {
+      return (value: string) => value === origin;
+    }
+
+    const escapedOrigin = origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`^${escapedOrigin.replace(/\\\*/g, '.*')}$`);
+    return (value: string) => regex.test(value);
+  });
 
   app.enableCors({
-    origin: allowedOrigins,
+    origin: (origin, callback) => {
+      // Sem Origin normalmente é chamada server-to-server/healthcheck.
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+
+      const allowed = originMatchers.some((matcher) => matcher(origin));
+      callback(allowed ? null : new Error(`Origin ${origin} não permitida pelo CORS`), allowed);
+    },
     credentials: true,
   });
 
