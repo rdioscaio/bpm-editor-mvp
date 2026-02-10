@@ -13,15 +13,48 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack }) => {
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [versions, setVersions] = useState<any[]>([]);
   const [showVersions, setShowVersions] = useState(false);
+  const [activeBpmnXml, setActiveBpmnXml] = useState<string | undefined>(undefined);
+  const [activeVersionId, setActiveVersionId] = useState<string | null>(null);
 
   useEffect(() => {
-    loadVersions();
-  }, [process.id]);
+    setCurrentProcess(process);
+    setActiveBpmnXml(undefined);
+    setActiveVersionId(null);
+    void loadVersions(process.id, process.currentVersionId);
+  }, [process]);
 
-  const loadVersions = async () => {
+  const getXmlFromVersion = (version: any): string | undefined => {
+    const xml = version?.bpmnContent?.xml;
+    if (typeof xml === 'string' && xml.trim().length > 0) {
+      return xml;
+    }
+    return undefined;
+  };
+
+  const loadVersions = async (processId: string, preferredVersionId?: string) => {
     try {
-      const response = await processApi.getVersions(process.id);
-      setVersions(response.data);
+      const response = await processApi.getVersions(processId);
+      const nextVersions = response.data;
+      setVersions(nextVersions);
+
+      if (nextVersions.length === 0) {
+        setActiveVersionId(null);
+        setActiveBpmnXml(undefined);
+        return;
+      }
+
+      const preferredVersion = preferredVersionId
+        ? nextVersions.find((version) => version.id === preferredVersionId) || nextVersions[0]
+        : nextVersions[0];
+
+      const xml = getXmlFromVersion(preferredVersion);
+      if (xml) {
+        setActiveVersionId(preferredVersion.id);
+        setActiveBpmnXml(xml);
+      } else {
+        setActiveVersionId(null);
+        setActiveBpmnXml(undefined);
+      }
     } catch (err) {
       console.error('Erro ao carregar versões:', err);
     }
@@ -30,12 +63,16 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack }) => {
   const handleSave = async (bpmnContent: Record<string, any>, svgContent: string) => {
     setSaving(true);
     try {
-      await processApi.saveVersion(process.id, {
+      const savedVersion = await processApi.saveVersion(process.id, {
         bpmnContent,
         svgContent,
         description: `Versão ${versions.length + 1}`,
       });
-      await loadVersions();
+
+      const updatedProcess = await processApi.getProcess(process.id);
+      setCurrentProcess(updatedProcess.data);
+      await loadVersions(process.id, savedVersion.data.id);
+
       setMessage({ type: 'success', text: 'Processo salvo com sucesso!' });
       setTimeout(() => setMessage(null), 3000);
     } catch (err: any) {
@@ -48,7 +85,16 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack }) => {
   const handleLoadVersion = async (versionId: string) => {
     try {
       const response = await processApi.getVersion(process.id, versionId);
-      // Aqui você carregaria a versão no editor
+
+      const xml = getXmlFromVersion(response.data);
+      if (!xml) {
+        setMessage({ type: 'error', text: 'Versão sem XML válido para importação' });
+        setTimeout(() => setMessage(null), 3000);
+        return;
+      }
+
+      setActiveVersionId(versionId);
+      setActiveBpmnXml(xml);
       setMessage({ type: 'success', text: `Versão carregada: v${response.data.versionNumber}` });
       setTimeout(() => setMessage(null), 3000);
     } catch (err) {
@@ -76,7 +122,7 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack }) => {
               onClick={() => setShowVersions(!showVersions)}
               className="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded"
             >
-              📋 Versões ({versions.length})
+              📋 Versões ({versions.length}) {saving ? '· salvando...' : ''}
             </button>
           </div>
         </div>
@@ -98,7 +144,7 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack }) => {
       <div className="flex flex-1 overflow-hidden">
         {/* Editor */}
         <div className="flex-1 overflow-hidden">
-          <BpmnEditor onSave={handleSave} />
+          <BpmnEditor bpmnXml={activeBpmnXml} onSave={handleSave} />
         </div>
 
         {/* Versions Sidebar */}
@@ -110,7 +156,12 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack }) => {
             ) : (
               <div className="space-y-2">
                 {versions.map((version) => (
-                  <div key={version.id} className="bg-white border border-gray-300 rounded p-2">
+                  <div
+                    key={version.id}
+                    className={`bg-white border rounded p-2 ${
+                      activeVersionId === version.id ? 'border-blue-500 ring-1 ring-blue-200' : 'border-gray-300'
+                    }`}
+                  >
                     <p className="font-semibold text-sm">v{version.versionNumber}</p>
                     <p className="text-xs text-gray-500 mb-2">{new Date(version.createdAt).toLocaleString()}</p>
                     <button
