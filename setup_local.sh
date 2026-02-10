@@ -9,9 +9,8 @@ echo "================================"
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Função para print com cor
 print_status() {
   echo -e "${GREEN}✓${NC} $1"
 }
@@ -28,29 +27,61 @@ print_info() {
 echo ""
 print_info "Verificando pré-requisitos..."
 
-if ! command -v docker &> /dev/null; then
-  print_error "Docker não encontrado. Instale em: https://docs.docker.com/get-docker/"
-  exit 1
-fi
-print_status "Docker encontrado"
-
-if ! command -v docker-compose &> /dev/null; then
-  print_error "Docker Compose não encontrado"
-  exit 1
-fi
-print_status "Docker Compose encontrado"
-
+# Node.js
 if ! command -v node &> /dev/null; then
-  print_error "Node.js não encontrado. Instale em: https://nodejs.org/"
+  print_error "Node.js não encontrado"
+  echo "Instale em: https://nodejs.org/ (v18+)"
   exit 1
 fi
-print_status "Node.js encontrado ($(node --version))"
+NODE_VERSION=$(node --version)
+print_status "Node.js $NODE_VERSION"
 
+# npm
+if ! command -v npm &> /dev/null; then
+  print_error "npm não encontrado"
+  exit 1
+fi
+NPM_VERSION=$(npm --version)
+print_status "npm $NPM_VERSION"
+
+# pnpm
 if ! command -v pnpm &> /dev/null; then
   print_info "pnpm não encontrado. Instalando..."
   npm install -g pnpm
 fi
-print_status "pnpm encontrado ($(pnpm --version))"
+PNPM_VERSION=$(pnpm --version)
+print_status "pnpm $PNPM_VERSION"
+
+# Docker
+if ! command -v docker &> /dev/null; then
+  print_error "Docker não encontrado"
+  echo "Instale em: https://docs.docker.com/get-docker/"
+  exit 1
+fi
+DOCKER_VERSION=$(docker --version)
+print_status "$DOCKER_VERSION"
+
+# Docker Compose
+if ! command -v docker-compose &> /dev/null; then
+  print_error "Docker Compose não encontrado"
+  exit 1
+fi
+DC_VERSION=$(docker-compose --version)
+print_status "$DC_VERSION"
+
+# jq (para parsing JSON)
+if ! command -v jq &> /dev/null; then
+  print_info "jq não encontrado. Instalando..."
+  if command -v apt-get &> /dev/null; then
+    sudo apt-get update && sudo apt-get install -y jq
+  elif command -v brew &> /dev/null; then
+    brew install jq
+  else
+    print_error "Não consegui instalar jq. Instale manualmente."
+    exit 1
+  fi
+fi
+print_status "jq instalado"
 
 # 2. Parar containers antigos
 echo ""
@@ -92,7 +123,15 @@ npm run build
 cd ..
 print_status "Servidor compilado"
 
-# 6. Criar arquivo .env local
+# 6. Build do cliente
+echo ""
+print_info "Compilando cliente..."
+cd client
+npm run build
+cd ..
+print_status "Cliente compilado"
+
+# 7. Criar arquivo .env local
 echo ""
 print_info "Configurando variáveis de ambiente..."
 if [ ! -f server/.env ]; then
@@ -105,13 +144,16 @@ DB_PORT=5432
 DB_USER=postgres
 DB_PASSWORD=postgres
 DB_NAME=bpm_editor
+
+CORS_ORIGIN=http://localhost:5173,http://localhost:3000
+TYPEORM_SYNCHRONIZE=true
 EOF
   print_status ".env criado"
 else
   print_status ".env já existe"
 fi
 
-# 7. Testar healthcheck
+# 8. Testar healthcheck
 echo ""
 print_info "Iniciando servidor em background..."
 cd server
@@ -135,24 +177,27 @@ for i in {1..30}; do
   sleep 1
 done
 
-# 8. Testar persistência
+# 9. Testar persistência
 echo ""
 print_info "Testando persistência..."
 
 # Criar processo
-PROCESS_ID=$(curl -s -X POST http://localhost:3001/api/processes \
+PROCESS_RESPONSE=$(curl -s -X POST http://localhost:3001/api/processes \
   -H "Content-Type: application/json" \
-  -d '{"name":"Test Process","description":"Setup test"}' | jq -r '.id')
+  -d '{"name":"Test Process","description":"Setup test"}')
 
-if [ -z "$PROCESS_ID" ] || [ "$PROCESS_ID" = "null" ]; then
+PROCESS_ID=$(echo "$PROCESS_RESPONSE" | jq -r '.id // empty')
+
+if [ -z "$PROCESS_ID" ]; then
   print_error "Erro ao criar processo"
+  print_error "Resposta: $PROCESS_RESPONSE"
   kill $SERVER_PID 2>/dev/null || true
   exit 1
 fi
 print_status "Processo criado: $PROCESS_ID"
 
 # Recuperar processo
-RETRIEVED=$(curl -s http://localhost:3001/api/processes/$PROCESS_ID | jq -r '.name')
+RETRIEVED=$(curl -s http://localhost:3001/api/processes/$PROCESS_ID | jq -r '.name // empty')
 
 if [ "$RETRIEVED" = "Test Process" ]; then
   print_status "Persistência funcionando ✓"
@@ -162,7 +207,7 @@ else
   exit 1
 fi
 
-# 9. Iniciar cliente
+# 10. Iniciar cliente
 echo ""
 print_info "Iniciando cliente (Ctrl+C para parar)..."
 cd client

@@ -4,6 +4,9 @@ import { ProcessVersion } from './modules/process/entities/process-version.entit
 
 export const getDatabaseConfig = (): TypeOrmModuleOptions => {
   const isProduction = process.env.NODE_ENV === 'production';
+  // MVP: synchronize sempre true para criar schema automaticamente
+  // Futuro: usar migrations explícitas com typeorm migration:run
+  const synchronize = process.env.TYPEORM_SYNCHRONIZE === 'false' ? false : true;
 
   return {
     type: 'postgres',
@@ -13,7 +16,7 @@ export const getDatabaseConfig = (): TypeOrmModuleOptions => {
     password: process.env.DB_PASSWORD || 'postgres',
     database: process.env.DB_NAME || 'bpm_editor',
     entities: [Process, ProcessVersion],
-    synchronize: !isProduction,
+    synchronize: synchronize,
     logging: !isProduction,
     ssl: isProduction ? { rejectUnauthorized: false } : false,
     extra: {
