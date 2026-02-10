@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { BpmnEditor } from '../components/BpmnEditor';
 import { processApi, Process } from '../services/api';
 import { BrandLogo } from '../components/BrandLogo';
+import { AiDraftPanel } from '../components/AiDraftPanel';
 
 interface EditorProps {
   process: Process;
@@ -19,11 +20,13 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack, theme, onToggle
   const [activeBpmnXml, setActiveBpmnXml] = useState<string | undefined>(undefined);
   const [activeVersionId, setActiveVersionId] = useState<string | null>(null);
   const [connectMode, setConnectMode] = useState(false);
+  const [showAiDraft, setShowAiDraft] = useState(false);
 
   useEffect(() => {
     setCurrentProcess(process);
     setActiveBpmnXml(undefined);
     setActiveVersionId(null);
+    setShowAiDraft(false);
     void loadVersions(process.id, process.currentVersionId);
   }, [process]);
 
@@ -106,6 +109,25 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack, theme, onToggle
     }
   };
 
+  const handleAiApplyXml = (xml: string, draftProcessName: string) => {
+    setActiveVersionId(null);
+    setActiveBpmnXml(xml);
+    setCurrentProcess((current) => ({
+      ...current,
+      name: draftProcessName || current.name,
+    }));
+    setMessage({
+      type: 'success',
+      text: 'Rascunho IA aplicado no editor. Revise, conecte ajustes e salve.',
+    });
+    setTimeout(() => setMessage(null), 3500);
+  };
+
+  const handleAiStatus = (nextMessage: { type: 'success' | 'error'; text: string }) => {
+    setMessage(nextMessage);
+    setTimeout(() => setMessage(null), 3500);
+  };
+
   return (
     <div className="editor-shell">
       <header className="app-header">
@@ -137,6 +159,14 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack, theme, onToggle
             </button>
             <button
               type="button"
+              onClick={() => setShowAiDraft((current) => !current)}
+              className="btn btn-secondary"
+              title="Abrir formulário guiado para gerar draft BPMN com IA"
+            >
+              {showAiDraft ? 'Ocultar IA Draft' : 'IA Draft BPMN'}
+            </button>
+            <button
+              type="button"
               onClick={() => setConnectMode((current) => !current)}
               title="Ativar modo para conectar etapas"
               aria-label="Ativar modo para conectar etapas"
@@ -165,6 +195,13 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack, theme, onToggle
 
       <div className="editor-layout">
         <div className="editor-main">
+          {showAiDraft && (
+            <AiDraftPanel
+              processName={currentProcess.name}
+              onApplyXml={handleAiApplyXml}
+              onStatus={handleAiStatus}
+            />
+          )}
           <BpmnEditor bpmnXml={activeBpmnXml} onSave={handleSave} connectMode={connectMode} />
         </div>
 

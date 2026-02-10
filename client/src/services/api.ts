@@ -32,6 +32,56 @@ export interface ProcessVersion {
   createdAt: string;
 }
 
+export interface AiDraftContext {
+  processName: string;
+  objective: string;
+  trigger: string;
+  actors: string[];
+  systems?: string[];
+  keySteps: string[];
+  businessRules?: string[];
+  exceptions?: string[];
+  observations?: string;
+}
+
+export interface AiDraftRequest {
+  intent: 'draft_bpmn';
+  policyVersion?: string;
+  language?: 'pt-BR';
+  context: AiDraftContext;
+  limits?: {
+    maxNodes?: number;
+    maxFlows?: number;
+    maxResponseBytes?: number;
+  };
+}
+
+export interface AiDraftNode {
+  id: string;
+  type: 'start' | 'task' | 'gateway_exclusive' | 'end';
+  label: string;
+}
+
+export interface AiDraftFlow {
+  id: string;
+  source: string;
+  target: string;
+  label?: string;
+}
+
+export interface AiDraftResponse {
+  policyVersion: string;
+  provider: 'gemini';
+  model: string;
+  createdAt: string;
+  draft: {
+    processName: string;
+    nodes: AiDraftNode[];
+    flows: AiDraftFlow[];
+  };
+  bpmnXml: string;
+}
+
 export const processApi = {
   getAllProcesses: () => api.get<Process[]>('/processes'),
   getProcess: (id: string) => api.get<Process>(`/processes/${id}`),
@@ -49,6 +99,10 @@ export const processApi = {
   getVersions: (id: string) => api.get<ProcessVersion[]>(`/processes/${id}/versions`),
   getVersion: (id: string, versionId: string) =>
     api.get<ProcessVersion>(`/processes/${id}/versions/${versionId}`),
+};
+
+export const aiApi = {
+  draftBpmn: (data: AiDraftRequest) => api.post<AiDraftResponse>('/ai/draft-bpmn', data),
 };
 
 export default api;
