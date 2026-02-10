@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Backend NestJS para editor BPMN",
   "main": "dist/main.js",
-  "type": "module",
+
   "scripts": {
     "dev": "nest start --watch",
     "build": "nest build",

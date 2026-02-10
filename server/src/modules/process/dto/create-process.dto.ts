@@ -2,7 +2,7 @@ import { IsString, IsOptional, IsArray } from 'class-validator';
 
 export class CreateProcessDto {
   @IsString()
-  name: string;
+  name!: string;
 
   @IsOptional()
   @IsString()

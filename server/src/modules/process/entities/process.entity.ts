@@ -4,29 +4,29 @@ import { ProcessVersion } from './process-version.entity';
 @Entity('processes')
 export class Process {
   @PrimaryGeneratedColumn('uuid')
-  id: string;
+  id!: string;
 
   @Column()
-  name: string;
+  name!: string;
 
   @Column({ nullable: true })
-  description: string;
+  description?: string;
 
   @Column({ nullable: true })
-  responsible: string;
+  responsible?: string;
 
   @Column({ type: 'simple-array', nullable: true })
-  tags: string[];
+  tags?: string[];
 
   @Column({ nullable: true })
-  currentVersionId: string;
+  currentVersionId?: string;
 
   @CreateDateColumn()
-  createdAt: Date;
+  createdAt!: Date;
 
   @UpdateDateColumn()
-  updatedAt: Date;
+  updatedAt!: Date;
 
   @OneToMany(() => ProcessVersion, (version) => version.process, { cascade: true })
-  versions: ProcessVersion[];
+  versions!: ProcessVersion[];
 }

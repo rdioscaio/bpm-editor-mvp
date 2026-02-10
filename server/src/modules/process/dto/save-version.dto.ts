@@ -2,7 +2,7 @@ import { IsObject, IsOptional, IsString } from 'class-validator';
 
 export class SaveVersionDto {
   @IsObject()
-  bpmnContent: Record<string, any>;
+  bpmnContent!: Record<string, any>;
 
   @IsOptional()
   @IsString()

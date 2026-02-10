@@ -4,27 +4,27 @@ import { Process } from './process.entity';
 @Entity('process_versions')
 export class ProcessVersion {
   @PrimaryGeneratedColumn('uuid')
-  id: string;
+  id!: string;
 
   @Column()
-  processId: string;
+  processId!: string;
 
   @Column()
-  versionNumber: number;
+  versionNumber!: number;
 
   @Column({ type: 'jsonb' })
-  bpmnContent: Record<string, any>;
+  bpmnContent!: Record<string, any>;
 
   @Column({ nullable: true })
-  svgContent: string;
+  svgContent?: string;
 
   @Column({ nullable: true })
-  description: string;
+  description?: string;
 
   @CreateDateColumn()
-  createdAt: Date;
+  createdAt!: Date;
 
   @ManyToOne(() => Process, (process) => process.versions, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'processId' })
-  process: Process;
+  process!: Process;
 }

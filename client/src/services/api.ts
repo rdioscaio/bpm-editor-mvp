@@ -1,12 +1,13 @@
 import axios from 'axios';
 
-const API_BASE_URL = '/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : '/api';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
   },
+  withCredentials: true,
 });
 
 export interface Process {
@@ -32,7 +33,6 @@ export interface ProcessVersion {
 }
 
 export const processApi = {
-  // Processos
   getAllProcesses: () => api.get<Process[]>('/processes'),
   getProcess: (id: string) => api.get<Process>(`/processes/${id}`),
   createProcess: (data: { name: string; description?: string; responsible?: string; tags?: string[] }) =>
@@ -41,11 +41,9 @@ export const processApi = {
     api.put<Process>(`/processes/${id}`, data),
   deleteProcess: (id: string) => api.delete(`/processes/${id}`),
 
-  // Validação
   validateBpmn: (id: string, bpmnContent: Record<string, any>) =>
     api.post<{ valid: boolean; errors: string[] }>(`/processes/${id}/validate`, { bpmnContent }),
 
-  // Versões
   saveVersion: (id: string, data: { bpmnContent: Record<string, any>; svgContent?: string; description?: string }) =>
     api.post<ProcessVersion>(`/processes/${id}/versions`, data),
   getVersions: (id: string) => api.get<ProcessVersion[]>(`/processes/${id}/versions`),
