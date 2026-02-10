@@ -10,8 +10,16 @@ export const AppDataSource = new DataSource({
   password: process.env.DB_PASSWORD || 'postgres',
   database: process.env.DB_NAME || 'bpm_editor',
   entities: [Process, ProcessVersion],
-  migrations: ['src/migrations/*.ts'],
+  // Em produção, usar migrations compiladas em dist/migrations
+  // Em desenvolvimento, usar migrations em src/migrations
+  migrations:
+    process.env.NODE_ENV === 'production'
+      ? ['dist/migrations/*.js']
+      : ['src/migrations/*.ts'],
   synchronize: false,
-  logging: false,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  logging: process.env.NODE_ENV !== 'production',
+  ssl:
+    process.env.NODE_ENV === 'production'
+      ? { rejectUnauthorized: false }
+      : false,
 });

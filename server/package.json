@@ -9,9 +9,9 @@
     "build": "nest build",
     "start": "node dist/main.js",
     "start:prod": "npm run migration:run && node dist/main.js",
-    "migration:generate": "typeorm migration:generate",
-    "migration:run": "typeorm migration:run",
-    "migration:revert": "typeorm migration:revert",
+    "migration:generate": "typeorm migration:generate -d dist/typeorm.config.js",
+    "migration:run": "typeorm migration:run -d dist/typeorm.config.js",
+    "migration:revert": "typeorm migration:revert -d dist/typeorm.config.js",
     "db:setup": "node --loader ts-node/esm scripts/setup-db.ts",
     "db:seed": "node --loader ts-node/esm scripts/seed-db.ts"
   },
