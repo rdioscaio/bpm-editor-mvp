@@ -22,6 +22,86 @@ const EMPTY_DIAGRAM = `<?xml version="1.0" encoding="UTF-8"?>
 
 const ONBOARDING_STORAGE_KEY = 'tottal_bpm_editor_onboarding_v1';
 
+const EXACT_TOOLTIP_TRANSLATIONS: Record<string, string> = {
+  'Activate the hand tool': 'Ativar ferramenta de mão',
+  'Activate the lasso tool': 'Ativar ferramenta de seleção livre',
+  'Activate the create/remove space tool': 'Ativar ferramenta de criar/remover espaço',
+  'Activate the global connect tool': 'Ativar ferramenta de conexão global',
+  'Create StartEvent': 'Criar evento inicial',
+  'Create Intermediate/Boundary Event': 'Criar evento intermediário/de borda',
+  'Create EndEvent': 'Criar evento final',
+  'Create Gateway': 'Criar gateway',
+  'Create Task': 'Criar tarefa',
+  'Create DataObjectReference': 'Criar referência de dados',
+  'Append Task': 'Adicionar tarefa',
+  'Append EndEvent': 'Adicionar evento final',
+  'Append Gateway': 'Adicionar gateway',
+  'Append Intermediate/Boundary Event': 'Adicionar evento intermediário/de borda',
+  'Append text annotation': 'Adicionar anotação de texto',
+  'Connect using Sequence/MessageFlow': 'Conectar usando fluxo de sequência/mensagem',
+  Remove: 'Remover',
+  Delete: 'Excluir',
+  'Delete selected elements': 'Excluir elementos selecionados',
+  'Change type': 'Alterar tipo',
+  'Change element type': 'Alterar tipo do elemento',
+  'Open minimap': 'Abrir minimapa',
+  'Close minimap': 'Fechar minimapa',
+};
+
+const BPMN_TERM_TRANSLATIONS: Record<string, string> = {
+  StartEvent: 'evento inicial',
+  EndEvent: 'evento final',
+  Task: 'tarefa',
+  Gateway: 'gateway',
+  DataObjectReference: 'referência de dados',
+  SequenceFlow: 'fluxo de sequência',
+  MessageFlow: 'fluxo de mensagem',
+  Intermediate: 'intermediário',
+  Boundary: 'de borda',
+  Event: 'evento',
+  Exclusive: 'exclusivo',
+  Parallel: 'paralelo',
+  User: 'do usuário',
+};
+
+const translateBpmnTerms = (value: string): string => {
+  let translated = value;
+
+  Object.entries(BPMN_TERM_TRANSLATIONS).forEach(([source, target]) => {
+    const termRegex = new RegExp(source, 'g');
+    translated = translated.replace(termRegex, target);
+  });
+
+  return translated;
+};
+
+const translateTooltip = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+
+  if (EXACT_TOOLTIP_TRANSLATIONS[trimmed]) {
+    return EXACT_TOOLTIP_TRANSLATIONS[trimmed];
+  }
+
+  if (/^Create\s+/i.test(trimmed)) {
+    return `Criar ${translateBpmnTerms(trimmed.replace(/^Create\s+/i, ''))}`.trim();
+  }
+
+  if (/^Append\s+/i.test(trimmed)) {
+    return `Adicionar ${translateBpmnTerms(trimmed.replace(/^Append\s+/i, ''))}`.trim();
+  }
+
+  if (/^Connect using\s+/i.test(trimmed)) {
+    return `Conectar usando ${translateBpmnTerms(trimmed.replace(/^Connect using\s+/i, '').replace('/', ' / '))}`.trim();
+  }
+
+  if (/^Replace with\s+/i.test(trimmed)) {
+    return `Substituir por ${translateBpmnTerms(trimmed.replace(/^Replace with\s+/i, ''))}`.trim();
+  }
+
+  return translateBpmnTerms(trimmed);
+};
+
 export const BpmnEditor: React.FC<BpmnEditorProps> = ({
   bpmnXml,
   onSave,
@@ -31,10 +111,50 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const modelerRef = useRef<BpmnModeler | null>(null);
   const connectModeRef = useRef(connectMode);
+  const tooltipObserverRef = useRef<MutationObserver | null>(null);
+  const tooltipRafRef = useRef<number | null>(null);
   const [selectedElement, setSelectedElement] = useState<any>(null);
   const [errors, setErrors] = useState<string[]>([]);
   const [modelerReady, setModelerReady] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
+
+  const applyPortugueseTooltips = useCallback(() => {
+    if (!containerRef.current) return;
+
+    const nodes = containerRef.current.querySelectorAll<HTMLElement>('[title], [aria-label]');
+
+    nodes.forEach((node) => {
+      const translateAttribute = (attribute: 'title' | 'aria-label') => {
+        const sourceAttr = `data-original-${attribute}`;
+        const currentValue = node.getAttribute(attribute);
+        if (!currentValue || !currentValue.trim()) return;
+
+        if (!node.hasAttribute(sourceAttr)) {
+          node.setAttribute(sourceAttr, currentValue);
+        }
+
+        const originalValue = node.getAttribute(sourceAttr) || currentValue;
+        const translatedValue = translateTooltip(originalValue);
+
+        if (translatedValue && translatedValue !== currentValue) {
+          node.setAttribute(attribute, translatedValue);
+        }
+      };
+
+      translateAttribute('title');
+      translateAttribute('aria-label');
+    });
+  }, []);
+
+  const scheduleTooltipTranslation = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    if (tooltipRafRef.current !== null) return;
+
+    tooltipRafRef.current = window.requestAnimationFrame(() => {
+      tooltipRafRef.current = null;
+      applyPortugueseTooltips();
+    });
+  }, [applyPortugueseTooltips]);
 
   const importDiagram = useCallback(async (xml: string) => {
     const modeler = modelerRef.current;
@@ -44,12 +164,13 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
       await modeler.importXML(xml);
       const canvas = modeler.get('canvas') as { zoom: (level: 'fit-viewport') => void };
       canvas.zoom('fit-viewport');
+      scheduleTooltipTranslation();
       setErrors([]);
     } catch (err: any) {
       console.error('Erro ao importar BPMN:', err);
       setErrors(['Erro ao carregar diagrama BPMN']);
     }
-  }, []);
+  }, [scheduleTooltipTranslation]);
 
   useEffect(() => {
     connectModeRef.current = connectMode;
@@ -80,6 +201,7 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
     };
     const handleElementClick = ({ element }: any) => setSelectedElement(element);
     const handleCanvasClick = () => setSelectedElement(null);
+    const handleToolUpdate = () => scheduleTooltipTranslation();
     const keepConnectModeActive = () => {
       if (!connectModeRef.current) return;
 
@@ -99,20 +221,39 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
 
     eventBus.on('element.click', handleElementClick);
     eventBus.on('canvas.click', handleCanvasClick);
+    eventBus.on('tool-manager.update', handleToolUpdate);
     eventBus.on('connect.ended', keepConnectModeActive);
     eventBus.on('connect.canceled', keepConnectModeActive);
+
+    tooltipObserverRef.current = new MutationObserver(() => {
+      scheduleTooltipTranslation();
+    });
+
+    tooltipObserverRef.current.observe(containerRef.current, {
+      childList: true,
+      subtree: true,
+    });
+
+    scheduleTooltipTranslation();
     setModelerReady(true);
 
     return () => {
       eventBus.off('element.click', handleElementClick);
       eventBus.off('canvas.click', handleCanvasClick);
+      eventBus.off('tool-manager.update', handleToolUpdate);
       eventBus.off('connect.ended', keepConnectModeActive);
       eventBus.off('connect.canceled', keepConnectModeActive);
+      tooltipObserverRef.current?.disconnect();
+      tooltipObserverRef.current = null;
+      if (tooltipRafRef.current !== null && typeof window !== 'undefined') {
+        window.cancelAnimationFrame(tooltipRafRef.current);
+        tooltipRafRef.current = null;
+      }
       setModelerReady(false);
       modeler.destroy();
       modelerRef.current = null;
     };
-  }, []);
+  }, [scheduleTooltipTranslation]);
 
   useEffect(() => {
     if (!modelerRef.current) return;
@@ -237,15 +378,30 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
           <button
             onClick={handleSave}
             disabled={readOnly}
-            className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Salvar a versão atual do processo"
+            aria-label="Salvar a versão atual do processo"
+            data-tooltip="Salvar a versão atual do processo"
+            className="tooltip-trigger bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            💾 Salvar
+            Salvar
           </button>
-          <button onClick={handleExportXml} className="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded">
-            📥 Export XML
+          <button
+            onClick={handleExportXml}
+            title="Exportar BPMN em XML"
+            aria-label="Exportar BPMN em XML"
+            data-tooltip="Exportar BPMN em XML"
+            className="tooltip-trigger bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded"
+          >
+            Exportar XML
           </button>
-          <button onClick={handleExportSvg} className="bg-purple-500 hover:bg-purple-600 text-white px-4 py-2 rounded">
-            🖼️ Export SVG
+          <button
+            onClick={handleExportSvg}
+            title="Exportar diagrama em SVG"
+            aria-label="Exportar diagrama em SVG"
+            data-tooltip="Exportar diagrama em SVG"
+            className="tooltip-trigger bg-purple-500 hover:bg-purple-600 text-white px-4 py-2 rounded"
+          >
+            Exportar SVG
           </button>
         </div>
 

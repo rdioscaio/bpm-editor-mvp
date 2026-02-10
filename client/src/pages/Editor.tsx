@@ -127,18 +127,23 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack }) => {
             <button
               onClick={() => setShowVersions(!showVersions)}
               className="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded"
+              title="Mostrar ou ocultar versões salvas"
             >
-              📋 Versões ({versions.length}) {saving ? '· salvando...' : ''}
+              Versões ({versions.length}) {saving ? '· salvando...' : ''}
             </button>
             <button
               type="button"
               onClick={() => setConnectMode((current) => !current)}
+              title="Ativar modo para conectar etapas"
+              aria-label="Ativar modo para conectar etapas"
+              data-tooltip="Ativar modo para conectar etapas"
               className={`px-4 py-2 rounded font-semibold ${
-                connectMode ? 'bg-cyan-600 hover:bg-cyan-700 text-white' : 'bg-slate-700 hover:bg-slate-800 text-white'
+                connectMode
+                  ? 'tooltip-trigger bg-cyan-600 hover:bg-cyan-700 text-white'
+                  : 'tooltip-trigger bg-slate-700 hover:bg-slate-800 text-white'
               }`}
-              title="Ativa ou desativa o modo de conexão entre etapas"
             >
-              {connectMode ? 'Conectar etapas: ON' : 'Conectar etapas: OFF'}
+              {connectMode ? 'Conectar etapas: ligado' : 'Conectar etapas: desligado'}
             </button>
           </div>
         </div>
