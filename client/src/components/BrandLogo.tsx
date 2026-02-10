@@ -14,11 +14,11 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
   const logo = <img src="/brand/tottal-logo.svg" alt="TOTTAL BPM" className={className} />;
 
   if (!onClick) {
-    return logo;
+    return <span className="brand-logo">{logo}</span>;
   }
 
   return (
-    <button type="button" onClick={onClick} title={title} aria-label={title} className="inline-flex items-center">
+    <button type="button" onClick={onClick} title={title} aria-label={title} className="brand-logo brand-logo-button">
       {logo}
     </button>
   );

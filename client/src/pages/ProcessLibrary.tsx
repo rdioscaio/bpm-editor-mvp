@@ -4,9 +4,11 @@ import { BrandLogo } from '../components/BrandLogo';
 
 interface ProcessLibraryProps {
   onSelectProcess?: (process: Process) => void;
+  theme: 'light' | 'dark';
+  onToggleTheme: () => void;
 }
 
-export const ProcessLibrary: React.FC<ProcessLibraryProps> = ({ onSelectProcess }) => {
+export const ProcessLibrary: React.FC<ProcessLibraryProps> = ({ onSelectProcess, theme, onToggleTheme }) => {
   const [processes, setProcesses] = useState<Process[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,132 +76,129 @@ export const ProcessLibrary: React.FC<ProcessLibraryProps> = ({ onSelectProcess 
   };
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      <div className="flex justify-between items-center mb-6 gap-4">
-        <div className="flex items-center gap-4">
-          <BrandLogo onClick={handleGoHome} />
-          <h1 className="text-3xl font-bold">Biblioteca de Processos</h1>
+    <div className="page-container">
+      <header className="page-header">
+        <div className="page-header-left">
+          <BrandLogo onClick={handleGoHome} className="h-8 w-auto" />
+          <div>
+            <h1 className="page-title">Biblioteca de Processos</h1>
+            <p className="page-subtitle">Modele, conecte e versione fluxos BPMN em minutos.</p>
+          </div>
         </div>
-        <button
-          onClick={() => setShowForm(!showForm)}
-          className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded font-semibold"
-        >
-          {showForm ? '✕ Cancelar' : '+ Novo Processo'}
-        </button>
-      </div>
+        <div className="header-actions">
+          <button type="button" onClick={onToggleTheme} className="btn btn-ghost" title="Alternar tema dia/noite">
+            {theme === 'light' ? 'Modo noite' : 'Modo dia'}
+          </button>
+          <button type="button" onClick={() => setShowForm(!showForm)} className="btn btn-primary">
+            {showForm ? 'Cancelar' : 'Novo processo'}
+          </button>
+        </div>
+      </header>
 
-      {error && (
-        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
-          {error}
-        </div>
-      )}
+      {error && <div className="message message-error">{error}</div>}
 
       {showForm && (
-        <div className="bg-white border border-gray-300 rounded p-6 mb-6">
-          <h2 className="text-xl font-bold mb-4">Criar Novo Processo</h2>
-          <form onSubmit={handleCreateProcess} className="space-y-4">
+        <section className="panel mb-6">
+          <h2 className="section-title">Criar Novo Processo</h2>
+          <form onSubmit={handleCreateProcess} className="form-stack">
             <div>
-              <label className="block text-sm font-semibold mb-1">Nome *</label>
+              <label className="field-label">Nome *</label>
               <input
                 type="text"
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                 required
                 placeholder="Ex: Aprovação de Pedido"
-                className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="input-field"
               />
             </div>
 
             <div>
-              <label className="block text-sm font-semibold mb-1">Descrição</label>
+              <label className="field-label">Descrição</label>
               <textarea
                 value={formData.description}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                 placeholder="Descrição do processo"
-                className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                className="input-field"
                 rows={3}
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="form-grid">
               <div>
-                <label className="block text-sm font-semibold mb-1">Responsável</label>
+                <label className="field-label">Responsável</label>
                 <input
                   type="text"
                   value={formData.responsible}
                   onChange={(e) => setFormData({ ...formData, responsible: e.target.value })}
                   placeholder="Nome do responsável"
-                  className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="input-field"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-semibold mb-1">Tags (separadas por vírgula)</label>
+                <label className="field-label">Tags (separadas por vírgula)</label>
                 <input
                   type="text"
                   value={formData.tags}
                   onChange={(e) => setFormData({ ...formData, tags: e.target.value })}
                   placeholder="Ex: vendas, aprovação"
-                  className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="input-field"
                 />
               </div>
             </div>
 
-            <button
-              type="submit"
-              className="w-full bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded font-semibold"
-            >
-              ✓ Criar Processo
+            <button type="submit" className="btn btn-primary btn-full">
+              Criar processo
             </button>
           </form>
-        </div>
+        </section>
       )}
 
       {loading ? (
-        <div className="text-center py-12">
-          <p className="text-gray-500">Carregando processos...</p>
+        <div className="empty-state">
+          <p>Carregando processos...</p>
         </div>
       ) : processes.length === 0 ? (
-        <div className="text-center py-12 bg-gray-50 rounded border border-gray-200">
-          <p className="text-gray-500 mb-4">Nenhum processo criado ainda</p>
-          <button
-            onClick={() => setShowForm(true)}
-            className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded"
-          >
+        <div className="empty-state">
+          <p>Nenhum processo criado ainda.</p>
+          <button onClick={() => setShowForm(true)} className="btn btn-primary mt-4">
             Criar primeiro processo
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="process-grid">
           {processes.map((process) => (
-            <div key={process.id} className="bg-white border border-gray-300 rounded p-4 hover:shadow-lg transition">
-              <h3 className="text-lg font-bold mb-2">{process.name}</h3>
-              {process.description && <p className="text-gray-600 text-sm mb-2">{process.description}</p>}
-              {process.responsible && <p className="text-gray-500 text-xs mb-2">👤 {process.responsible}</p>}
+            <article key={process.id} className="process-card">
+              <h3 className="process-card-title">{process.name}</h3>
+              {process.description && <p className="process-card-description">{process.description}</p>}
+              {process.responsible && <p className="process-card-meta">Responsável: {process.responsible}</p>}
               {process.tags && process.tags.length > 0 && (
-                <div className="flex flex-wrap gap-1 mb-3">
+                <div className="tag-list">
                   {process.tags.map((tag) => (
-                    <span key={tag} className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded">
+                    <span key={tag} className="tag-chip">
                       {tag}
                     </span>
                   ))}
                 </div>
               )}
-              <div className="flex gap-2 mt-4">
+              <div className="card-actions">
                 <button
                   onClick={() => onSelectProcess?.(process)}
-                  className="flex-1 bg-blue-500 hover:bg-blue-600 text-white px-3 py-2 rounded text-sm font-semibold"
+                  className="btn btn-primary btn-small btn-grow"
+                  title="Abrir processo no editor"
                 >
-                  ✎ Editar
+                  Editar
                 </button>
                 <button
                   onClick={() => handleDeleteProcess(process.id)}
-                  className="bg-red-500 hover:bg-red-600 text-white px-3 py-2 rounded text-sm font-semibold"
+                  className="btn btn-danger btn-small"
+                  title="Excluir processo"
                 >
-                  🗑️
+                  Excluir
                 </button>
               </div>
-            </div>
+            </article>
           ))}
         </div>
       )}

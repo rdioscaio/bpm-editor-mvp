@@ -25,81 +25,81 @@ export const BpmnPropertiesPanel: React.FC<BpmnPropertiesPanelProps> = ({ elemen
 
   if (!element || element.type === 'label') {
     return (
-      <div className="w-80 bg-gray-50 border-l border-gray-300 p-4">
-        <p className="text-gray-500 text-sm">Selecione um elemento para editar propriedades</p>
+      <div className="properties-panel">
+        <p className="muted-text">Selecione um elemento para editar propriedades.</p>
       </div>
     );
   }
 
   return (
-    <div className="w-80 bg-gray-50 border-l border-gray-300 p-4 overflow-y-auto">
-      <h3 className="font-bold text-lg mb-4">Propriedades</h3>
+    <div className="properties-panel">
+      <h3 className="section-title">Propriedades</h3>
 
       <div className="mb-4">
-        <label className="block text-sm font-semibold text-gray-700 mb-1">Tipo</label>
+        <label className="field-label">Tipo</label>
         <input
           type="text"
           value={element.type || ''}
           disabled
-          className="w-full px-3 py-2 border border-gray-300 rounded bg-gray-100 text-gray-600 text-sm"
+          className="input-field"
         />
       </div>
 
       <div className="mb-4">
-        <label className="block text-sm font-semibold text-gray-700 mb-1">ID</label>
+        <label className="field-label">ID</label>
         <input
           type="text"
           value={element.id || ''}
           disabled
-          className="w-full px-3 py-2 border border-gray-300 rounded bg-gray-100 text-gray-600 text-sm"
+          className="input-field"
         />
       </div>
 
       <div className="mb-4">
-        <label className="block text-sm font-semibold text-gray-700 mb-1">Nome *</label>
+        <label className="field-label">Nome *</label>
         <input
           type="text"
           value={name}
           onChange={(e) => handleNameChange(e.target.value)}
           placeholder="Nome do elemento"
-          className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="input-field"
         />
       </div>
 
       <div className="mb-4">
-        <label className="block text-sm font-semibold text-gray-700 mb-1">Documentação</label>
+        <label className="field-label">Documentação</label>
         <textarea
           value={documentation}
           onChange={(e) => setDocumentation(e.target.value)}
           placeholder="Descrição ou documentação"
-          className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+          className="input-field"
           rows={3}
         />
       </div>
 
       <div className="mb-4">
-        <label className="block text-sm font-semibold text-gray-700 mb-1">Responsável</label>
+        <label className="field-label">Responsável</label>
         <input
           type="text"
           value={responsible}
           onChange={(e) => setResponsible(e.target.value)}
           placeholder="Nome do responsável"
-          className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="input-field"
         />
       </div>
 
       <div className="mb-4">
-        <label className="block text-sm font-semibold text-gray-700 mb-1">SLA</label>
+        <label className="field-label">SLA</label>
         <input
           type="text"
           value={sla}
           onChange={(e) => setSla(e.target.value)}
           placeholder="Ex: 24 horas"
-          className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="input-field"
         />
       </div>
 
-      <div className="text-xs text-gray-500 mt-6 pt-4 border-t border-gray-200">
+      <div className="muted-text" style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid var(--color-border)' }}>
         <p>* Campo obrigatório</p>
       </div>
     </div>

@@ -185,6 +185,29 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
     }
   }, []);
 
+  const activateGlobalConnectTool = useCallback(() => {
+    const modeler = modelerRef.current;
+    if (!modeler) return;
+
+    const paletteEntry = containerRef.current?.querySelector<HTMLElement>(
+      '.djs-palette .entry[data-action=\"global-connect-tool\"]',
+    );
+
+    if (paletteEntry) {
+      paletteEntry.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      return;
+    }
+
+    const globalConnect = modeler.get('globalConnect') as {
+      isActive: () => boolean;
+      toggle: () => void;
+    };
+
+    if (!globalConnect.isActive()) {
+      globalConnect.toggle();
+    }
+  }, []);
+
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -213,7 +236,7 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
       if (!globalConnect.isActive()) {
         setTimeout(() => {
           if (connectModeRef.current && !globalConnect.isActive()) {
-            globalConnect.toggle();
+            activateGlobalConnectTool();
           }
         }, 0);
       }
@@ -253,7 +276,7 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
       modeler.destroy();
       modelerRef.current = null;
     };
-  }, [scheduleTooltipTranslation]);
+  }, [activateGlobalConnectTool, scheduleTooltipTranslation]);
 
   useEffect(() => {
     if (!modelerRef.current) return;
@@ -268,15 +291,19 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
       isActive: () => boolean;
       toggle: () => void;
     };
+    const toolManager = modelerRef.current.get('toolManager') as {
+      setActive: (tool: string | null) => void;
+    };
 
     if (connectMode && !globalConnect.isActive()) {
-      globalConnect.toggle();
+      activateGlobalConnectTool();
     }
 
     if (!connectMode && globalConnect.isActive()) {
+      toolManager.setActive(null);
       globalConnect.toggle();
     }
-  }, [connectMode, modelerReady]);
+  }, [activateGlobalConnectTool, connectMode, modelerReady]);
 
   const getActiveModeler = () => {
     if (!modelerRef.current) {
@@ -347,7 +374,7 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
     <div className="flex h-full min-h-0 gap-4">
       <div className="flex-1 flex flex-col min-h-0">
         {showOnboarding && (
-          <div className="bg-cyan-50 border border-cyan-200 text-cyan-900 px-4 py-3 rounded mb-4">
+          <div className="message message-info mb-4">
             <p className="font-semibold mb-2">Primeiros passos</p>
             <ol className="list-decimal pl-5 text-sm space-y-1">
               <li>Arraste elementos da paleta para o canvas.</li>
@@ -358,7 +385,7 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
               <button
                 type="button"
                 onClick={dismissOnboarding}
-                className="bg-cyan-600 hover:bg-cyan-700 text-white px-3 py-1.5 rounded text-sm"
+                className="btn btn-primary btn-small"
               >
                 Entendi
               </button>
@@ -367,7 +394,7 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
         )}
 
         {errors.length > 0 && (
-          <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-2 rounded mb-4">
+          <div className="message message-error mb-4">
             {errors.map((err, i) => (
               <div key={i}>{err}</div>
             ))}
@@ -381,7 +408,7 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
             title="Salvar a versão atual do processo"
             aria-label="Salvar a versão atual do processo"
             data-tooltip="Salvar a versão atual do processo"
-            className="tooltip-trigger bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+            className="tooltip-trigger btn btn-primary"
           >
             Salvar
           </button>
@@ -390,7 +417,7 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
             title="Exportar BPMN em XML"
             aria-label="Exportar BPMN em XML"
             data-tooltip="Exportar BPMN em XML"
-            className="tooltip-trigger bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded"
+            className="tooltip-trigger btn btn-secondary"
           >
             Exportar XML
           </button>
@@ -399,7 +426,7 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
             title="Exportar diagrama em SVG"
             aria-label="Exportar diagrama em SVG"
             data-tooltip="Exportar diagrama em SVG"
-            className="tooltip-trigger bg-purple-500 hover:bg-purple-600 text-white px-4 py-2 rounded"
+            className="tooltip-trigger btn btn-ghost"
           >
             Exportar SVG
           </button>

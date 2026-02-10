@@ -6,9 +6,11 @@ import { BrandLogo } from '../components/BrandLogo';
 interface EditorProps {
   process: Process;
   onBack?: () => void;
+  theme: 'light' | 'dark';
+  onToggleTheme: () => void;
 }
 
-export const Editor: React.FC<EditorProps> = ({ process, onBack }) => {
+export const Editor: React.FC<EditorProps> = ({ process, onBack, theme, onToggleTheme }) => {
   const [currentProcess, setCurrentProcess] = useState(process);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -105,28 +107,30 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack }) => {
   };
 
   return (
-    <div className="flex flex-col h-screen bg-white">
-      {/* Header */}
-      <div className="bg-gray-100 border-b border-gray-300 p-4">
-        <div className="flex justify-between items-center mb-3">
-          <div>
-            <div className="flex items-center gap-4 mb-2">
-              <BrandLogo onClick={onBack} title="Ir para a Biblioteca" />
+    <div className="editor-shell">
+      <header className="app-header">
+        <div className="editor-header-row">
+          <div className="editor-header-main">
+            <div className="editor-header-brand-row">
+              <BrandLogo onClick={onBack} title="Ir para a Biblioteca" className="h-8 w-auto" />
               <button
                 onClick={onBack}
-                className="text-blue-500 hover:text-blue-700 font-semibold inline-block"
+                className="btn btn-link"
                 title="Voltar para a Biblioteca"
               >
                 ← Biblioteca
               </button>
             </div>
-            <h1 className="text-2xl font-bold">{currentProcess.name}</h1>
-            {currentProcess.description && <p className="text-gray-600 text-sm">{currentProcess.description}</p>}
+            <h1 className="page-title">{currentProcess.name}</h1>
+            {currentProcess.description && <p className="page-subtitle">{currentProcess.description}</p>}
           </div>
-          <div className="flex gap-2">
+          <div className="header-actions">
+            <button type="button" onClick={onToggleTheme} className="btn btn-ghost" title="Alternar tema dia/noite">
+              {theme === 'light' ? 'Modo noite' : 'Modo dia'}
+            </button>
             <button
               onClick={() => setShowVersions(!showVersions)}
-              className="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded"
+              className="btn btn-secondary"
               title="Mostrar ou ocultar versões salvas"
             >
               Versões ({versions.length}) {saving ? '· salvando...' : ''}
@@ -137,10 +141,8 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack }) => {
               title="Ativar modo para conectar etapas"
               aria-label="Ativar modo para conectar etapas"
               data-tooltip="Ativar modo para conectar etapas"
-              className={`px-4 py-2 rounded font-semibold ${
-                connectMode
-                  ? 'tooltip-trigger bg-cyan-600 hover:bg-cyan-700 text-white'
-                  : 'tooltip-trigger bg-slate-700 hover:bg-slate-800 text-white'
+              className={`tooltip-trigger btn ${
+                connectMode ? 'btn-toggle-active' : 'btn-toggle-inactive'
               }`}
             >
               {connectMode ? 'Conectar etapas: ligado' : 'Conectar etapas: desligado'}
@@ -149,51 +151,42 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack }) => {
         </div>
 
         {connectMode && (
-          <div className="bg-cyan-100 border border-cyan-300 text-cyan-900 px-3 py-2 rounded text-sm mb-3">
+          <div className="message message-info mb-3">
             Clique na origem e depois no destino.
           </div>
         )}
 
         {message && (
-          <div
-            className={`px-4 py-2 rounded ${
-              message.type === 'success'
-                ? 'bg-green-100 text-green-800 border border-green-400'
-                : 'bg-red-100 text-red-800 border border-red-400'
-            }`}
-          >
+          <div className={message.type === 'success' ? 'message message-success' : 'message message-error'}>
             {message.text}
           </div>
         )}
-      </div>
+      </header>
 
-      {/* Main Content */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Editor */}
-        <div className="flex-1 overflow-hidden">
+      <div className="editor-layout">
+        <div className="editor-main">
           <BpmnEditor bpmnXml={activeBpmnXml} onSave={handleSave} connectMode={connectMode} />
         </div>
 
-        {/* Versions Sidebar */}
         {showVersions && (
-          <div className="w-64 bg-gray-50 border-l border-gray-300 p-4 overflow-y-auto">
-            <h2 className="font-bold text-lg mb-4">Versões</h2>
+          <aside className="versions-sidebar">
+            <h2 className="section-title">Versões</h2>
             {versions.length === 0 ? (
-              <p className="text-gray-500 text-sm">Nenhuma versão salva</p>
+              <p className="muted-text">Nenhuma versão salva</p>
             ) : (
-              <div className="space-y-2">
+              <div className="versions-list">
                 {versions.map((version) => (
                   <div
                     key={version.id}
-                    className={`bg-white border rounded p-2 ${
-                      activeVersionId === version.id ? 'border-blue-500 ring-1 ring-blue-200' : 'border-gray-300'
+                    className={`version-item ${
+                      activeVersionId === version.id ? 'version-item-active' : 'version-item-idle'
                     }`}
                   >
-                    <p className="font-semibold text-sm">v{version.versionNumber}</p>
-                    <p className="text-xs text-gray-500 mb-2">{new Date(version.createdAt).toLocaleString()}</p>
+                    <p className="version-title">v{version.versionNumber}</p>
+                    <p className="version-date">{new Date(version.createdAt).toLocaleString()}</p>
                     <button
                       onClick={() => handleLoadVersion(version.id)}
-                      className="w-full bg-blue-500 hover:bg-blue-600 text-white px-2 py-1 rounded text-xs"
+                      className="btn btn-primary btn-small btn-full"
                     >
                       Carregar
                     </button>
@@ -201,7 +194,7 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack }) => {
                 ))}
               </div>
             )}
-          </div>
+          </aside>
         )}
       </div>
     </div>
