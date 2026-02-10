@@ -16,6 +16,7 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack }) => {
   const [showVersions, setShowVersions] = useState(false);
   const [activeBpmnXml, setActiveBpmnXml] = useState<string | undefined>(undefined);
   const [activeVersionId, setActiveVersionId] = useState<string | null>(null);
+  const [connectMode, setConnectMode] = useState(false);
 
   useEffect(() => {
     setCurrentProcess(process);
@@ -129,8 +130,24 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack }) => {
             >
               📋 Versões ({versions.length}) {saving ? '· salvando...' : ''}
             </button>
+            <button
+              type="button"
+              onClick={() => setConnectMode((current) => !current)}
+              className={`px-4 py-2 rounded font-semibold ${
+                connectMode ? 'bg-cyan-600 hover:bg-cyan-700 text-white' : 'bg-slate-700 hover:bg-slate-800 text-white'
+              }`}
+              title="Ativa ou desativa o modo de conexão entre etapas"
+            >
+              {connectMode ? 'Conectar etapas: ON' : 'Conectar etapas: OFF'}
+            </button>
           </div>
         </div>
+
+        {connectMode && (
+          <div className="bg-cyan-100 border border-cyan-300 text-cyan-900 px-3 py-2 rounded text-sm mb-3">
+            Clique na origem e depois no destino.
+          </div>
+        )}
 
         {message && (
           <div
@@ -149,7 +166,7 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack }) => {
       <div className="flex flex-1 overflow-hidden">
         {/* Editor */}
         <div className="flex-1 overflow-hidden">
-          <BpmnEditor bpmnXml={activeBpmnXml} onSave={handleSave} />
+          <BpmnEditor bpmnXml={activeBpmnXml} onSave={handleSave} connectMode={connectMode} />
         </div>
 
         {/* Versions Sidebar */}
