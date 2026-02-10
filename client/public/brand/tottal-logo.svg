@@ -1,0 +1,7 @@
+<svg width="236" height="44" viewBox="0 0 236 44" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="2" y="2" width="40" height="40" rx="10" fill="#06B6D4"/>
+  <path d="M12 12H32V17H24V32H20V17H12V12Z" fill="white"/>
+  <path d="M24 20H30V24H24V20Z" fill="white"/>
+  <text x="52" y="22" fill="#0F172A" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="700">TOTTAL</text>
+  <text x="52" y="35" fill="#475569" font-family="Segoe UI, Arial, sans-serif" font-size="10" font-weight="600" letter-spacing="1.2">BPM PLATFORM</text>
+</svg>

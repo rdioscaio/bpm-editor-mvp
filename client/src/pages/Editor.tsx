@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { BpmnEditor } from '../components/BpmnEditor';
 import { processApi, Process } from '../services/api';
+import { BrandLogo } from '../components/BrandLogo';
 
 interface EditorProps {
   process: Process;
@@ -108,12 +109,16 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack }) => {
       <div className="bg-gray-100 border-b border-gray-300 p-4">
         <div className="flex justify-between items-center mb-3">
           <div>
-            <button
-              onClick={onBack}
-              className="text-blue-500 hover:text-blue-700 font-semibold mb-2 inline-block"
-            >
-              ← Voltar
-            </button>
+            <div className="flex items-center gap-4 mb-2">
+              <BrandLogo onClick={onBack} title="Ir para a Biblioteca" />
+              <button
+                onClick={onBack}
+                className="text-blue-500 hover:text-blue-700 font-semibold inline-block"
+                title="Voltar para a Biblioteca"
+              >
+                ← Biblioteca
+              </button>
+            </div>
             <h1 className="text-2xl font-bold">{currentProcess.name}</h1>
             {currentProcess.description && <p className="text-gray-600 text-sm">{currentProcess.description}</p>}
           </div>
