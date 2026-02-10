@@ -4,6 +4,7 @@ import { ProcessModule } from './modules/process/process.module';
 import { AiModule } from './modules/ai/ai.module';
 import { getDatabaseConfig } from './database.config';
 import { HealthController } from './health.controller';
+import { VersionController } from './version.controller';
 
 @Module({
   imports: [
@@ -11,6 +12,6 @@ import { HealthController } from './health.controller';
     ProcessModule,
     AiModule,
   ],
-  controllers: [HealthController],
+  controllers: [HealthController, VersionController],
 })
 export class AppModule {}
