@@ -1,0 +1,24 @@
+{
+  "name": "bpm-editor-mvp",
+  "version": "0.1.0",
+  "description": "MVP Editor BPMN - Plataforma de modelagem de processos",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "cd server && npm run dev",
+    "dev:client": "cd client && npm run dev",
+    "build": "npm run build:server && npm run build:client",
+    "build:server": "cd server && npm run build",
+    "build:client": "cd client && npm run build",
+    "start": "cd server && npm run start",
+    "db:setup": "cd server && npm run db:setup",
+    "db:seed": "cd server && npm run db:seed"
+  },
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
