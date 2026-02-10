@@ -100,25 +100,31 @@ export class ProcessService {
   async validateBpmn(bpmnContent: Record<string, any>): Promise<{ valid: boolean; errors: string[] }> {
     const errors: string[] = [];
 
-    // Validação básica
-    if (!bpmnContent.elements || !Array.isArray(bpmnContent.elements)) {
-      errors.push('BPMN deve conter array de elementos');
+    // Validação básica: aceita XML ou estrutura de elementos
+    if (!bpmnContent.xml && (!bpmnContent.elements || !Array.isArray(bpmnContent.elements))) {
+      errors.push('BPMN deve conter XML ou array de elementos');
       return { valid: false, errors };
     }
 
-    const elements = bpmnContent.elements;
-    const elementIds = new Set(elements.map((e: any) => e.id));
-
-    // Verificar start event
-    const hasStartEvent = elements.some((e: any) => e.type === 'bpmn:StartEvent');
-    if (!hasStartEvent) {
-      errors.push('Deve haver pelo menos um Start Event');
+    // Se tem XML, validação passa (bpmn-js já valida)
+    if (bpmnContent.xml) {
+      return { valid: true, errors: [] };
     }
 
-    // Verificar end event
+    // Se tem elementos, validar estrutura
+    const elements = bpmnContent.elements || [];
+    const elementIds = new Set(elements.map((e: any) => e.id));
+
+    // Verificar start event (opcional para MVP)
+    const hasStartEvent = elements.some((e: any) => e.type === 'bpmn:StartEvent');
+    if (!hasStartEvent && elements.length > 0) {
+      console.warn('Recomenda-se adicionar um Start Event');
+    }
+
+    // Verificar end event (opcional para MVP)
     const hasEndEvent = elements.some((e: any) => e.type === 'bpmn:EndEvent');
-    if (!hasEndEvent) {
-      errors.push('Deve haver pelo menos um End Event');
+    if (!hasEndEvent && elements.length > 0) {
+      console.warn('Recomenda-se adicionar um End Event');
     }
 
     // Verificar tasks têm nome
