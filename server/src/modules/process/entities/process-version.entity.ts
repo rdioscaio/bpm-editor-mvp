@@ -1,7 +1,7 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
 import { Process } from './process.entity';
 
-@Entity('process_versions')
+@Entity('process_version')
 export class ProcessVersion {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

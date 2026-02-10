@@ -4,9 +4,12 @@ import { ProcessVersion } from './modules/process/entities/process-version.entit
 
 export const getDatabaseConfig = (): TypeOrmModuleOptions => {
   const isProduction = process.env.NODE_ENV === 'production';
-  // MVP: synchronize sempre true para criar schema automaticamente
-  // Futuro: usar migrations explícitas com typeorm migration:run
-  const synchronize = process.env.TYPEORM_SYNCHRONIZE === 'false' ? false : true;
+  // Produção deve usar migrations; synchronize só liga explicitamente.
+  const synchronizeEnv = process.env.TYPEORM_SYNCHRONIZE;
+  const synchronize =
+    synchronizeEnv !== undefined
+      ? synchronizeEnv === 'true'
+      : !isProduction;
 
   return {
     type: 'postgres',

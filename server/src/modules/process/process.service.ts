@@ -32,10 +32,10 @@ export class ProcessService {
     });
   }
 
-  async getProcessById(id: string): Promise<Process> {
+  async getProcessById(id: string, withVersions = true): Promise<Process> {
     const process = await this.processRepository.findOne({
       where: { id },
-      relations: ['versions'],
+      relations: withVersions ? ['versions'] : [],
     });
     if (!process) {
       throw new NotFoundException(`Processo ${id} não encontrado`);
@@ -55,7 +55,7 @@ export class ProcessService {
   }
 
   async saveVersion(processId: string, dto: SaveVersionDto): Promise<ProcessVersion> {
-    const process = await this.getProcessById(processId);
+    await this.getProcessById(processId, false);
 
     // Contar versões existentes
     const versionCount = await this.versionRepository.count({
@@ -72,9 +72,10 @@ export class ProcessService {
 
     const savedVersion = await this.versionRepository.save(version);
 
-    // Atualizar currentVersionId do processo
-    process.currentVersionId = savedVersion.id;
-    await this.processRepository.save(process);
+    // Atualiza sem persistir relações carregadas para evitar nullify acidental em process_version.
+    await this.processRepository.update(processId, {
+      currentVersionId: savedVersion.id,
+    });
 
     return savedVersion;
   }

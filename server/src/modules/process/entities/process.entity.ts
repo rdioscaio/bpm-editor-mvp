@@ -1,7 +1,7 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, OneToMany } from 'typeorm';
 import { ProcessVersion } from './process-version.entity';
 
-@Entity('processes')
+@Entity('process')
 export class Process {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -15,7 +15,7 @@ export class Process {
   @Column({ nullable: true })
   responsible?: string;
 
-  @Column({ type: 'simple-array', nullable: true })
+  @Column({ type: 'jsonb', nullable: true, default: () => "'[]'" })
   tags?: string[];
 
   @Column({ nullable: true })
@@ -27,6 +27,6 @@ export class Process {
   @UpdateDateColumn()
   updatedAt!: Date;
 
-  @OneToMany(() => ProcessVersion, (version) => version.process, { cascade: true })
+  @OneToMany(() => ProcessVersion, (version) => version.process)
   versions!: ProcessVersion[];
 }
