@@ -43,6 +43,46 @@ interface LayoutInfo {
   height: number;
 }
 
+type RenderNodeType =
+  | 'start'
+  | 'end'
+  | 'gateway_exclusive'
+  | 'task'
+  | 'user_task'
+  | 'service_task'
+  | 'business_rule_task'
+  | 'subprocess';
+
+interface RenderNode {
+  id: string;
+  type: RenderNodeType;
+  label: string;
+  lane?: string;
+  loopMarker?: boolean;
+  children?: {
+    nodes: Array<{ id: string; type: RenderNodeType; label: string }>;
+    flows: DraftBpmnFlow[];
+  };
+}
+
+interface RenderGraph {
+  processName: string;
+  nodes: RenderNode[];
+  flows: DraftBpmnFlow[];
+}
+
+interface LaneSpec {
+  id: string;
+  name: string;
+}
+
+const LANE_SPECS: LaneSpec[] = [
+  { id: 'Lane_Operacao', name: 'Operação (Humano)' },
+  { id: 'Lane_Automacao_IA', name: 'Automação/IA' },
+  { id: 'Lane_Gestao', name: 'Gestão' },
+  { id: 'Lane_Diretoria', name: 'Diretoria' },
+];
+
 const DEFAULT_POLICY_VERSION = 'draft-bpmn-policy-v1';
 const DEFAULT_MAX_NODES = 24;
 const DEFAULT_MAX_FLOWS = 40;
@@ -474,51 +514,60 @@ export class AiService {
   }
 
   private buildBpmnXml(schema: DraftBpmnSchema): string {
+    const graph = this.buildRenderGraph(schema);
     const processId = 'Process_1';
     const definitionsId = 'Definitions_1';
     const diagramId = 'BPMNDiagram_1';
     const planeId = 'BPMNPlane_1';
+    const collaborationId = 'Collaboration_1';
+    const participantId = 'Participant_1';
 
     const nodeLayouts = new Map<string, LayoutInfo>();
+    const laneByName = new Map(LANE_SPECS.map((lane) => [lane.name, lane]));
+    const laneHeight = 170;
+    const participantX = 80;
+    const participantY = 80;
+    const laneHeaderWidth = 48;
+    const baseX = participantX + laneHeaderWidth + 70;
+    const orderedNodeIds = this.getMainFlowOrder(graph.nodes, graph.flows);
+    const rowCount = orderedNodeIds.length > 10 ? 3 : orderedNodeIds.length > 5 ? 2 : 1;
+    const columnsPerRow = Math.ceil(orderedNodeIds.length / rowCount);
+    const horizontalGap = 210;
 
-    schema.nodes.forEach((node, index) => {
-      const x = 140 + index * 180;
-
-      let width = 120;
-      let height = 80;
-      let tagName = 'bpmn:Task';
-      let bpmnPrefix = 'Task';
-
-      if (node.type === 'start') {
-        width = 36;
-        height = 36;
-        tagName = 'bpmn:StartEvent';
-        bpmnPrefix = 'StartEvent';
-      } else if (node.type === 'end') {
-        width = 36;
-        height = 36;
-        tagName = 'bpmn:EndEvent';
-        bpmnPrefix = 'EndEvent';
-      } else if (node.type === 'gateway_exclusive') {
-        width = 50;
-        height = 50;
-        tagName = 'bpmn:ExclusiveGateway';
-        bpmnPrefix = 'Gateway';
+    orderedNodeIds.forEach((nodeId, index) => {
+      const node = graph.nodes.find((item) => item.id === nodeId);
+      if (!node) {
+        throw new BadRequestException(`Nó ${nodeId} não encontrado`);
       }
 
-      const y = 240 - height / 2;
+      const visual = this.getNodeVisualDefinition(node.type);
 
-      nodeLayouts.set(node.id, {
-        bpmnId: `${bpmnPrefix}_${index + 1}`,
-        tagName,
+      const row = Math.floor(index / columnsPerRow);
+      const rowStart = row * columnsPerRow;
+      const rowEnd = Math.min(rowStart + columnsPerRow, orderedNodeIds.length);
+      const rowSize = rowEnd - rowStart;
+      const colInRow = index - rowStart;
+      const serpentineCol = row % 2 === 0 ? colInRow : rowSize - 1 - colInRow;
+
+      const x = baseX + serpentineCol * horizontalGap;
+      const laneName = node.lane || LANE_SPECS[0].name;
+      const laneSpec = laneByName.get(laneName) || LANE_SPECS[0];
+      const laneIndex = LANE_SPECS.findIndex((lane) => lane.id === laneSpec.id);
+      const laneTop = participantY + laneIndex * laneHeight;
+      const centerY = laneTop + laneHeight / 2;
+      const y = centerY - visual.height / 2;
+
+      nodeLayouts.set(nodeId, {
+        bpmnId: `${visual.bpmnPrefix}_${index + 1}`,
+        tagName: visual.tagName,
         x,
         y,
-        width,
-        height,
+        width: visual.width,
+        height: visual.height,
       });
     });
 
-    const flowMap = schema.flows.map((flow, index) => ({
+    const flowMap = graph.flows.map((flow, index) => ({
       flow,
       bpmnId: `Flow_${index + 1}`,
     }));
@@ -536,7 +585,7 @@ export class AiService {
       incomingByNode.set(item.flow.target, target);
     }
 
-    const nodeElements = schema.nodes
+    const nodeElements = graph.nodes
       .map((node) => {
         const layout = nodeLayouts.get(node.id);
         if (!layout) {
@@ -552,6 +601,21 @@ export class AiService {
           .join('\n');
 
         const sections = [incomingXml, outgoingXml].filter((part) => part.length > 0).join('\n');
+
+        if (node.type === 'subprocess') {
+          const childXml = this.buildSubprocessChildrenXml(node);
+          const loopXml = node.loopMarker ? '      <bpmn:standardLoopCharacteristics />' : '';
+
+          return [
+            `    <${layout.tagName} id="${layout.bpmnId}" name="${this.escapeXml(node.label)}">`,
+            sections,
+            loopXml,
+            childXml,
+            `    </${layout.tagName}>`,
+          ]
+            .filter((line) => line.length > 0)
+            .join('\n');
+        }
 
         return [
           `    <${layout.tagName} id="${layout.bpmnId}" name="${this.escapeXml(node.label)}">`,
@@ -578,15 +642,20 @@ export class AiService {
       })
       .join('\n');
 
-    const shapeElements = schema.nodes
+    const laneSetXml = this.buildLaneSetXml(graph.nodes, nodeLayouts);
+    const participantName = `${graph.processName} - BPO + IA`;
+
+    const shapeElements = graph.nodes
       .map((node) => {
         const layout = nodeLayouts.get(node.id);
         if (!layout) {
           throw new BadRequestException(`Nó ${node.id} sem shape BPMNDI`);
         }
 
+        const expandedAttribute = node.type === 'subprocess' ? ' isExpanded="false"' : '';
+
         return [
-          `    <bpmndi:BPMNShape id="${layout.bpmnId}_di" bpmnElement="${layout.bpmnId}">`,
+          `    <bpmndi:BPMNShape id="${layout.bpmnId}_di" bpmnElement="${layout.bpmnId}"${expandedAttribute}>`,
           `      <dc:Bounds x="${layout.x}" y="${layout.y}" width="${layout.width}" height="${layout.height}" />`,
           '    </bpmndi:BPMNShape>',
         ].join('\n');
@@ -614,15 +683,42 @@ export class AiService {
       })
       .join('\n');
 
+    const maxNodeRight = Math.max(...Array.from(nodeLayouts.values()).map((layout) => layout.x + layout.width), 900);
+    const minPoolWidth = 980;
+    const participantWidth = Math.max(minPoolWidth, maxNodeRight - participantX + 120);
+    const participantHeight = LANE_SPECS.length * laneHeight;
+    const laneShapes = LANE_SPECS
+      .map((lane, laneIndex) => {
+        const laneY = participantY + laneIndex * laneHeight;
+        return [
+          `    <bpmndi:BPMNShape id="${lane.id}_di" bpmnElement="${lane.id}" isHorizontal="true">`,
+          `      <dc:Bounds x="${participantX}" y="${laneY}" width="${participantWidth}" height="${laneHeight}" />`,
+          '    </bpmndi:BPMNShape>',
+        ].join('\n');
+      })
+      .join('\n');
+
+    const participantShape = [
+      `    <bpmndi:BPMNShape id="${participantId}_di" bpmnElement="${participantId}" isHorizontal="true">`,
+      `      <dc:Bounds x="${participantX}" y="${participantY}" width="${participantWidth}" height="${participantHeight}" />`,
+      '    </bpmndi:BPMNShape>',
+    ].join('\n');
+
     const xml = [
       '<?xml version="1.0" encoding="UTF-8"?>',
       `<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" id="${definitionsId}" targetNamespace="http://bpmn.io/schema/bpmn" exporter="tottal-bpm-ai" exporterVersion="1.0.0">`,
-      `  <bpmn:process id="${processId}" name="${this.escapeXml(schema.processName)}" isExecutable="false">`,
+      `  <bpmn:process id="${processId}" name="${this.escapeXml(graph.processName)}" isExecutable="false">`,
+      laneSetXml,
       nodeElements,
       flowElements,
       '  </bpmn:process>',
+      `  <bpmn:collaboration id="${collaborationId}">`,
+      `    <bpmn:participant id="${participantId}" name="${this.escapeXml(participantName)}" processRef="${processId}" />`,
+      '  </bpmn:collaboration>',
       `  <bpmndi:BPMNDiagram id="${diagramId}">`,
-      `    <bpmndi:BPMNPlane id="${planeId}" bpmnElement="${processId}">`,
+      `    <bpmndi:BPMNPlane id="${planeId}" bpmnElement="${collaborationId}">`,
+      participantShape,
+      laneShapes,
       shapeElements,
       edgeElements,
       '    </bpmndi:BPMNPlane>',
@@ -636,29 +732,452 @@ export class AiService {
   private getWaypoints(source: LayoutInfo, target: LayoutInfo): Array<{ x: number; y: number }> {
     const sourceCenterY = source.y + source.height / 2;
     const targetCenterY = target.y + target.height / 2;
+    const toRight = target.x >= source.x;
+    const sourceAnchorX = toRight ? source.x + source.width : source.x;
+    const targetAnchorX = toRight ? target.x : target.x + target.width;
 
-    if (source.x + source.width <= target.x) {
+    if (Math.abs(sourceCenterY - targetCenterY) <= 4) {
       return [
-        { x: source.x + source.width, y: sourceCenterY },
-        { x: target.x, y: targetCenterY },
+        { x: sourceAnchorX, y: sourceCenterY },
+        { x: targetAnchorX, y: targetCenterY },
       ];
     }
 
-    if (target.x + target.width <= source.x) {
+    if (Math.abs(sourceAnchorX - targetAnchorX) <= 4) {
       return [
-        { x: source.x, y: sourceCenterY },
-        { x: target.x + target.width, y: targetCenterY },
+        { x: sourceAnchorX, y: sourceCenterY },
+        { x: sourceAnchorX, y: targetCenterY },
+        { x: targetAnchorX, y: targetCenterY },
       ];
     }
 
-    const middleX = Math.round((source.x + source.width + target.x) / 2);
+    const middleX = Math.round((sourceAnchorX + targetAnchorX) / 2);
 
     return [
-      { x: source.x + source.width, y: sourceCenterY },
+      { x: sourceAnchorX, y: sourceCenterY },
       { x: middleX, y: sourceCenterY },
       { x: middleX, y: targetCenterY },
-      { x: target.x, y: targetCenterY },
+      { x: targetAnchorX, y: targetCenterY },
     ];
+  }
+
+  private buildSubprocessChildrenXml(node: RenderNode): string {
+    if (!node.children) {
+      return '';
+    }
+
+    const childIdMap = new Map<string, string>();
+    node.children.nodes.forEach((child, index) => {
+      const visual = this.getNodeVisualDefinition(child.type);
+      childIdMap.set(child.id, `${node.id}_${visual.bpmnPrefix}_${index + 1}`);
+    });
+
+    const incomingByNode = new Map<string, string[]>();
+    const outgoingByNode = new Map<string, string[]>();
+
+    node.children.flows.forEach((flow, index) => {
+      const flowId = `${node.id}_Flow_${index + 1}`;
+      const outgoing = outgoingByNode.get(flow.source) || [];
+      outgoing.push(flowId);
+      outgoingByNode.set(flow.source, outgoing);
+
+      const incoming = incomingByNode.get(flow.target) || [];
+      incoming.push(flowId);
+      incomingByNode.set(flow.target, incoming);
+    });
+
+    const nodeXml = node.children.nodes
+      .map((child) => {
+        const bpmnId = childIdMap.get(child.id);
+        if (!bpmnId) {
+          throw new BadRequestException(`Nó interno ${child.id} sem mapeamento BPMN`);
+        }
+
+        const visual = this.getNodeVisualDefinition(child.type);
+        const tagName = visual.tagName;
+
+        const incomingXml = (incomingByNode.get(child.id) || [])
+          .map((flowId) => `      <bpmn:incoming>${flowId}</bpmn:incoming>`)
+          .join('\n');
+        const outgoingXml = (outgoingByNode.get(child.id) || [])
+          .map((flowId) => `      <bpmn:outgoing>${flowId}</bpmn:outgoing>`)
+          .join('\n');
+
+        return [
+          `      <${tagName} id="${bpmnId}" name="${this.escapeXml(child.label)}">`,
+          incomingXml,
+          outgoingXml,
+          `      </${tagName}>`,
+        ]
+          .filter((line) => line.length > 0)
+          .join('\n');
+      })
+      .join('\n');
+
+    const flowXml = node.children.flows
+      .map((flow, index) => {
+        const flowId = `${node.id}_Flow_${index + 1}`;
+        const sourceRef = childIdMap.get(flow.source);
+        const targetRef = childIdMap.get(flow.target);
+
+        if (!sourceRef || !targetRef) {
+          throw new BadRequestException(`Fluxo interno ${flow.id} com source/target inválido`);
+        }
+
+        const labelAttr = flow.label ? ` name="${this.escapeXml(flow.label)}"` : '';
+        return `      <bpmn:sequenceFlow id="${flowId}" sourceRef="${sourceRef}" targetRef="${targetRef}"${labelAttr} />`;
+      })
+      .join('\n');
+
+    return [nodeXml, flowXml].filter((line) => line.length > 0).join('\n');
+  }
+
+  private buildLaneSetXml(nodes: RenderNode[], layouts: Map<string, LayoutInfo>): string {
+    const laneXml = LANE_SPECS.map((lane) => {
+      const flowNodeRefs = nodes
+        .filter((node) => (node.lane || LANE_SPECS[0].name) === lane.name)
+        .map((node) => layouts.get(node.id)?.bpmnId)
+        .filter((value): value is string => Boolean(value))
+        .map((flowNodeRef) => `        <bpmn:flowNodeRef>${flowNodeRef}</bpmn:flowNodeRef>`)
+        .join('\n');
+
+      return [
+        `      <bpmn:lane id="${lane.id}" name="${this.escapeXml(lane.name)}">`,
+        flowNodeRefs,
+        '      </bpmn:lane>',
+      ]
+        .filter((line) => line.length > 0)
+        .join('\n');
+    }).join('\n');
+
+    return [
+      '    <bpmn:laneSet id="LaneSet_1">',
+      laneXml,
+      '    </bpmn:laneSet>',
+    ].join('\n');
+  }
+
+  private getNodeVisualDefinition(type: RenderNodeType): {
+    width: number;
+    height: number;
+    tagName: string;
+    bpmnPrefix: string;
+  } {
+    if (type === 'start') {
+      return { width: 36, height: 36, tagName: 'bpmn:StartEvent', bpmnPrefix: 'StartEvent' };
+    }
+    if (type === 'end') {
+      return { width: 36, height: 36, tagName: 'bpmn:EndEvent', bpmnPrefix: 'EndEvent' };
+    }
+    if (type === 'gateway_exclusive') {
+      return { width: 50, height: 50, tagName: 'bpmn:ExclusiveGateway', bpmnPrefix: 'Gateway' };
+    }
+    if (type === 'subprocess') {
+      return { width: 190, height: 110, tagName: 'bpmn:SubProcess', bpmnPrefix: 'SubProcess' };
+    }
+    if (type === 'user_task') {
+      return { width: 130, height: 88, tagName: 'bpmn:UserTask', bpmnPrefix: 'UserTask' };
+    }
+    if (type === 'service_task') {
+      return { width: 130, height: 88, tagName: 'bpmn:ServiceTask', bpmnPrefix: 'ServiceTask' };
+    }
+    if (type === 'business_rule_task') {
+      return { width: 130, height: 88, tagName: 'bpmn:BusinessRuleTask', bpmnPrefix: 'BusinessRuleTask' };
+    }
+
+    return { width: 120, height: 80, tagName: 'bpmn:Task', bpmnPrefix: 'Task' };
+  }
+
+  private buildRenderGraph(schema: DraftBpmnSchema): RenderGraph {
+    const initialGraph: RenderGraph = {
+      processName: schema.processName,
+      nodes: schema.nodes.map((node) => ({
+        id: node.id,
+        type: node.type,
+        label: node.label,
+      })),
+      flows: [...schema.flows],
+    };
+    const pdcaGraph = this.applyPdcaSubprocess(initialGraph);
+    return this.assignOperationalMetadata(pdcaGraph);
+  }
+
+  private applyPdcaSubprocess(graph: RenderGraph): RenderGraph {
+    const labelByNodeId = new Map(graph.nodes.map((node) => [node.id, this.normalizeLabel(node.label)]));
+    const findNodeId = (pattern: RegExp) =>
+      graph.nodes.find((node) => pattern.test(labelByNodeId.get(node.id) || ''))?.id;
+
+    const planejarId = findNodeId(/\bplanejar\b/);
+    const executarId = findNodeId(/\bexecutar\b/);
+    const checarId = findNodeId(/\bchecar\b|\bverificar\b/);
+    const agirId = findNodeId(/\bagir\b|\bcorrigir\b|\bajustar\b/);
+
+    if (!planejarId || !executarId || !checarId || !agirId) {
+      return graph;
+    }
+
+    const pdcaNodeIds = new Set([planejarId, executarId, checarId, agirId]);
+    const externalIncoming = graph.flows.filter(
+      (flow) => pdcaNodeIds.has(flow.target) && !pdcaNodeIds.has(flow.source),
+    );
+    const externalOutgoing = graph.flows.filter(
+      (flow) => pdcaNodeIds.has(flow.source) && !pdcaNodeIds.has(flow.target),
+    );
+
+    if (externalIncoming.length === 0 || externalOutgoing.length === 0) {
+      return graph;
+    }
+
+    const remainingNodes = graph.nodes.filter((node) => !pdcaNodeIds.has(node.id));
+    const remainingFlows = graph.flows.filter(
+      (flow) => !pdcaNodeIds.has(flow.source) && !pdcaNodeIds.has(flow.target),
+    );
+
+    const subprocessId = this.createUniqueNodeId('ciclo_pdca_loop', remainingNodes);
+    const usedFlowIds = new Set(remainingFlows.map((flow) => flow.id));
+
+    const subprocessNode: RenderNode = {
+      id: subprocessId,
+      type: 'subprocess',
+      label: 'Ciclo PDCA (loop)',
+      loopMarker: true,
+      children: {
+        nodes: [
+          { id: 'pdca_start', type: 'start', label: 'Início PDCA' },
+          { id: 'pdca_planejar', type: 'task', label: 'Planejar' },
+          { id: 'pdca_executar', type: 'task', label: 'Executar' },
+          { id: 'pdca_checar', type: 'task', label: 'Checar' },
+          { id: 'pdca_gateway', type: 'gateway_exclusive', label: 'Meta atingida?' },
+          { id: 'pdca_agir', type: 'task', label: 'Agir' },
+          { id: 'pdca_end', type: 'end', label: 'PDCA concluído' },
+        ],
+        flows: [
+          { id: 'pdca_f1', source: 'pdca_start', target: 'pdca_planejar' },
+          { id: 'pdca_f2', source: 'pdca_planejar', target: 'pdca_executar' },
+          { id: 'pdca_f3', source: 'pdca_executar', target: 'pdca_checar' },
+          { id: 'pdca_f4', source: 'pdca_checar', target: 'pdca_gateway' },
+          { id: 'pdca_f5', source: 'pdca_gateway', target: 'pdca_end', label: 'Sim' },
+          { id: 'pdca_f6', source: 'pdca_gateway', target: 'pdca_agir', label: 'Não' },
+          { id: 'pdca_f7', source: 'pdca_agir', target: 'pdca_planejar', label: 'metaAtingida == false' },
+        ],
+      },
+    };
+
+    externalIncoming.forEach((flow) => {
+      remainingFlows.push({
+        id: this.createUniqueFlowId(`${flow.id}_pdca_in`, usedFlowIds),
+        source: flow.source,
+        target: subprocessId,
+      });
+    });
+
+    const padronizarTarget = externalOutgoing.find((flow) =>
+      /padronizar|comunicar/.test(labelByNodeId.get(flow.target) || ''),
+    );
+
+    if (padronizarTarget) {
+      remainingFlows.push({
+        id: this.createUniqueFlowId('pdca_macro_true', usedFlowIds),
+        source: subprocessId,
+        target: padronizarTarget.target,
+        label: 'Sim',
+      });
+    } else {
+      externalOutgoing.forEach((flow) => {
+        remainingFlows.push({
+          id: this.createUniqueFlowId(`${flow.id}_pdca_out`, usedFlowIds),
+          source: subprocessId,
+          target: flow.target,
+          label: flow.label,
+        });
+      });
+    }
+
+    return {
+      processName: graph.processName,
+      nodes: [...remainingNodes, subprocessNode],
+      flows: remainingFlows,
+    };
+  }
+
+  private assignOperationalMetadata(graph: RenderGraph): RenderGraph {
+    const typedNodes = graph.nodes.map((node) => {
+      if (node.type === 'task') {
+        const classification = this.classifyTask(node.label);
+        return {
+          ...node,
+          type: classification.type,
+          lane: classification.lane,
+        };
+      }
+
+      if (node.type === 'subprocess') {
+        const children = node.children
+          ? {
+              ...node.children,
+              nodes: node.children.nodes.map((child) => {
+                if (child.type === 'task') {
+                  return {
+                    ...child,
+                    type: 'user_task' as RenderNodeType,
+                  };
+                }
+                return child;
+              }),
+            }
+          : undefined;
+
+        return {
+          ...node,
+          lane: 'Gestão',
+          children,
+        };
+      }
+
+      return {
+        ...node,
+        lane: 'Operação (Humano)',
+      };
+    });
+
+    const nodeById = new Map(typedNodes.map((node) => [node.id, node]));
+    const outgoingByNode = new Map<string, string[]>();
+    const incomingByNode = new Map<string, string[]>();
+
+    graph.flows.forEach((flow) => {
+      const outgoing = outgoingByNode.get(flow.source) || [];
+      outgoing.push(flow.target);
+      outgoingByNode.set(flow.source, outgoing);
+
+      const incoming = incomingByNode.get(flow.target) || [];
+      incoming.push(flow.source);
+      incomingByNode.set(flow.target, incoming);
+    });
+
+    const inferLaneFromNeighbors = (nodeId: string): string => {
+      const neighborIds = [
+        ...(outgoingByNode.get(nodeId) || []),
+        ...(incomingByNode.get(nodeId) || []),
+      ];
+
+      for (const neighborId of neighborIds) {
+        const neighbor = nodeById.get(neighborId);
+        if (neighbor?.lane) {
+          return neighbor.lane;
+        }
+      }
+
+      return 'Operação (Humano)';
+    };
+
+    const finalNodes = typedNodes.map((node) => {
+      if (node.type === 'start' || node.type === 'end' || node.type === 'gateway_exclusive') {
+        return {
+          ...node,
+          lane: inferLaneFromNeighbors(node.id),
+        };
+      }
+
+      return node;
+    });
+
+    return {
+      processName: graph.processName,
+      nodes: finalNodes,
+      flows: graph.flows,
+    };
+  }
+
+  private classifyTask(label: string): { type: RenderNodeType; lane: string } {
+    const normalized = this.normalizeLabel(label);
+
+    if (/diretoria|escalar/.test(normalized)) {
+      return { type: 'user_task', lane: 'Diretoria' };
+    }
+
+    if (/regra|score|criterio|critério|policy|compliance/.test(normalized)) {
+      return { type: 'business_rule_task', lane: 'Automação/IA' };
+    }
+
+    if (/ia|automac|bot|sistema|api|gemini|modelo|classific|enriquec/.test(normalized)) {
+      return { type: 'service_task', lane: 'Automação/IA' };
+    }
+
+    if (/gestor|gerent|gerencia|aprova|valida|analisa|padroniza|comunica|meta/.test(normalized)) {
+      return { type: 'user_task', lane: 'Gestão' };
+    }
+
+    return { type: 'user_task', lane: 'Operação (Humano)' };
+  }
+
+  private createUniqueNodeId(base: string, nodes: RenderNode[]): string {
+    const used = new Set(nodes.map((node) => node.id));
+    let candidate = base;
+    let index = 1;
+    while (used.has(candidate)) {
+      candidate = `${base}_${index}`;
+      index += 1;
+    }
+    return candidate;
+  }
+
+  private createUniqueFlowId(base: string, used: Set<string>): string {
+    let candidate = base;
+    let index = 1;
+    while (used.has(candidate)) {
+      candidate = `${base}_${index}`;
+      index += 1;
+    }
+    used.add(candidate);
+    return candidate;
+  }
+
+  private normalizeLabel(value: string): string {
+    return value
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+  }
+
+  private getMainFlowOrder(nodes: Array<{ id: string; type: string }>, flows: DraftBpmnFlow[]): string[] {
+    const outgoingByNode = new Map<string, DraftBpmnFlow[]>();
+    flows.forEach((flow) => {
+      const list = outgoingByNode.get(flow.source) || [];
+      list.push(flow);
+      outgoingByNode.set(flow.source, list);
+    });
+
+    const startNode = nodes.find((node) => node.type === 'start') || nodes[0];
+    if (!startNode) {
+      return [];
+    }
+
+    const order: string[] = [];
+    const visited = new Set<string>();
+
+    const visit = (nodeId: string) => {
+      if (visited.has(nodeId)) {
+        return;
+      }
+
+      visited.add(nodeId);
+      order.push(nodeId);
+
+      const outgoing = (outgoingByNode.get(nodeId) || [])
+        .slice()
+        .sort((a, b) => a.id.localeCompare(b.id));
+
+      outgoing.forEach((flow) => visit(flow.target));
+    };
+
+    visit(startNode.id);
+
+    nodes
+      .filter((node) => !visited.has(node.id))
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .forEach((node) => order.push(node.id));
+
+    return order;
   }
 
   private escapeXml(value: string): string {
