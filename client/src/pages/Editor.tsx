@@ -202,7 +202,9 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack, theme, onToggle
               onStatus={handleAiStatus}
             />
           )}
-          <BpmnEditor bpmnXml={activeBpmnXml} onSave={handleSave} connectMode={connectMode} />
+          <div className="editor-canvas-slot">
+            <BpmnEditor bpmnXml={activeBpmnXml} onSave={handleSave} connectMode={connectMode} />
+          </div>
         </div>
 
         {showVersions && (

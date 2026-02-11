@@ -371,8 +371,8 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
   };
 
   return (
-    <div className="flex h-full min-h-0 gap-4">
-      <div className="flex-1 flex flex-col min-h-0">
+    <div className="bpmn-editor-layout flex h-full min-h-0 min-w-0 gap-4">
+      <div className="bpmn-editor-main flex-1 flex flex-col min-h-0 min-w-0">
         {showOnboarding && (
           <div className="message message-info mb-4">
             <p className="font-semibold mb-2">Primeiros passos</p>
@@ -401,7 +401,7 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
           </div>
         )}
 
-        <div className="flex gap-2 mb-4">
+        <div className="bpmn-editor-actions flex gap-2 mb-4">
           <button
             onClick={handleSave}
             disabled={readOnly}
@@ -436,11 +436,13 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
       </div>
 
       {selectedElement && (
-        <BpmnPropertiesPanel
-          element={selectedElement}
-          modeler={modelerRef.current}
-          onUpdate={() => setSelectedElement(null)}
-        />
+        <aside className="properties-panel-shell">
+          <BpmnPropertiesPanel
+            element={selectedElement}
+            modeler={modelerRef.current}
+            onUpdate={() => setSelectedElement(null)}
+          />
+        </aside>
       )}
     </div>
   );
