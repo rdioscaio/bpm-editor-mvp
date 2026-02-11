@@ -162,8 +162,10 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
 
     try {
       await modeler.importXML(xml);
-      const canvas = modeler.get('canvas') as { zoom: (level: 'fit-viewport') => void };
-      canvas.zoom('fit-viewport');
+      const canvas = modeler.get('canvas') as {
+        zoom: (level: 'fit-viewport', position?: 'auto') => void;
+      };
+      canvas.zoom('fit-viewport', 'auto');
       scheduleTooltipTranslation();
       setErrors([]);
     } catch (err: any) {
@@ -432,7 +434,10 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
           </button>
         </div>
 
-        <div ref={containerRef} className="bpmn-container flex-1 border border-gray-300 rounded bg-white min-h-[420px]" />
+        <div
+          ref={containerRef}
+          className="bpmn-container flex-1 min-h-0 min-w-0 w-full h-full overflow-hidden border border-gray-300 rounded bg-white"
+        />
       </div>
 
       {selectedElement && (

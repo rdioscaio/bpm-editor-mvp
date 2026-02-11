@@ -1,1 +1,42 @@
-/* App Styles */
+/* Editor layout stability overrides */
+
+.editor-shell {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.editor-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.editor-main {
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.editor-canvas-slot {
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.editor-canvas-slot .bpmn-editor-layout,
+.editor-canvas-slot .bpmn-editor-main,
+.editor-canvas-slot .bpmn-container,
+.editor-canvas-slot .djs-container,
+.editor-canvas-slot .djs-container > svg {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+
+.versions-sidebar,
+.properties-panel {
+  min-height: 0;
+}

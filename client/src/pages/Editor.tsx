@@ -129,7 +129,7 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack, theme, onToggle
   };
 
   return (
-    <div className="editor-shell">
+    <div className="editor-shell h-screen flex flex-col overflow-hidden">
       <header className="app-header">
         <div className="editor-header-row">
           <div className="editor-header-main">
@@ -193,22 +193,24 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack, theme, onToggle
         )}
       </header>
 
-      <div className="editor-layout">
-        <div className="editor-main">
+      <div className="editor-layout flex-1 min-h-0 flex overflow-hidden">
+        <div className="editor-main flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden">
           {showAiDraft && (
-            <AiDraftPanel
-              processName={currentProcess.name}
-              onApplyXml={handleAiApplyXml}
-              onStatus={handleAiStatus}
-            />
+            <div className="flex-shrink-0 overflow-auto max-h-[42vh]">
+              <AiDraftPanel
+                processName={currentProcess.name}
+                onApplyXml={handleAiApplyXml}
+                onStatus={handleAiStatus}
+              />
+            </div>
           )}
-          <div className="editor-canvas-slot">
+          <div className="editor-canvas-slot flex-1 min-h-0 min-w-0 overflow-hidden">
             <BpmnEditor bpmnXml={activeBpmnXml} onSave={handleSave} connectMode={connectMode} />
           </div>
         </div>
 
         {showVersions && (
-          <aside className="versions-sidebar">
+          <aside className="versions-sidebar min-h-0 overflow-auto">
             <h2 className="section-title">Versões</h2>
             {versions.length === 0 ? (
               <p className="muted-text">Nenhuma versão salva</p>
