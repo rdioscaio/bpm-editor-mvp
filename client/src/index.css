@@ -179,6 +179,15 @@ body {
   padding: 4px 8px;
 }
 
+.brand-logo img {
+  display: block;
+}
+
+:root[data-theme='dark'] .brand-logo {
+  background: #ffffff;
+  border-color: rgba(148, 163, 184, 0.45);
+}
+
 .brand-logo-button {
   cursor: pointer;
 }
