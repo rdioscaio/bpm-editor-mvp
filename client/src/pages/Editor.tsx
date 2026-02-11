@@ -128,6 +128,16 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack, theme, onToggle
     setTimeout(() => setMessage(null), 3500);
   };
 
+  const aiDraftSection = showAiDraft ? (
+    <div className="flex-shrink-0 overflow-auto max-h-[42vh]">
+      <AiDraftPanel
+        processName={currentProcess.name}
+        onApplyXml={handleAiApplyXml}
+        onStatus={handleAiStatus}
+      />
+    </div>
+  ) : null;
+
   return (
     <div className="editor-shell h-screen flex flex-col overflow-hidden">
       <header className="app-header">
@@ -195,15 +205,7 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack, theme, onToggle
 
       <div className="editor-layout flex-1 min-h-0 flex overflow-hidden">
         <div className="editor-main flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden">
-          {showAiDraft && (
-            <div className="flex-shrink-0 overflow-auto max-h-[42vh]">
-              <AiDraftPanel
-                processName={currentProcess.name}
-                onApplyXml={handleAiApplyXml}
-                onStatus={handleAiStatus}
-              />
-            </div>
-          )}
+          {aiDraftSection}
           <div className="editor-canvas-slot flex-1 min-h-0 min-w-0 overflow-hidden">
             <BpmnEditor bpmnXml={activeBpmnXml} onSave={handleSave} connectMode={connectMode} />
           </div>
