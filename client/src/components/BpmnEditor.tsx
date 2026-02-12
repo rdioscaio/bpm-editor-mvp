@@ -335,6 +335,18 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
       };
     }
 
+    if (
+      bo &&
+      (is(bo, 'bpmn:UserTask') || is(bo, 'bpmn:ServiceTask') || is(bo, 'bpmn:BusinessRuleTask'))
+    ) {
+      return {
+        width: Math.max((element.width || 130) - 18, 24),
+        height: Math.max((element.height || 88) - 30, 28),
+        centerX,
+        centerY: centerY + 4,
+      };
+    }
+
     return { width, height, centerX, centerY };
   }, []);
 
@@ -413,6 +425,15 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
       laneRect.setAttribute('stroke-width', '1.25');
       laneRect.setAttribute('fill-opacity', '1');
       gfx?.classList.add('lane-striped');
+
+      const laneLabelText =
+        gfx?.querySelector<SVGTextElement>('.djs-label text') ||
+        gfx?.querySelector<SVGTextElement>('text');
+      if (laneLabelText) {
+        laneLabelText.setAttribute('font-size', '12');
+        laneLabelText.setAttribute('font-weight', '600');
+        laneLabelText.setAttribute('letter-spacing', '0.01em');
+      }
     });
   }, []);
 
@@ -480,12 +501,52 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
     });
   }, [applyPortugueseTooltips]);
 
+  const rerouteAiDraftConnections = useCallback(() => {
+    const modeler = modelerRef.current;
+    if (!modeler) return;
+
+    const elementRegistry = modeler.get('elementRegistry') as {
+      filter: (matcher: (element: any) => boolean) => any[];
+    };
+    const layouter = modeler.get('layouter') as {
+      layoutConnection: (connection: any, hints?: Record<string, any>) => Array<{ x: number; y: number }>;
+    };
+    const modeling = modeler.get('modeling') as {
+      updateWaypoints: (connection: any, waypoints: Array<{ x: number; y: number }>) => void;
+    };
+
+    const sequenceConnections = elementRegistry.filter(
+      (element: any) =>
+        element?.waypoints &&
+        element?.businessObject &&
+        is(element.businessObject, 'bpmn:SequenceFlow'),
+    );
+
+    sequenceConnections.forEach((connection: any) => {
+      try {
+        const waypoints = layouter.layoutConnection(connection, {
+          connectionStart: connection.source,
+          connectionEnd: connection.target,
+        });
+
+        if (Array.isArray(waypoints) && waypoints.length >= 2) {
+          modeling.updateWaypoints(connection, waypoints);
+        }
+      } catch (error) {
+        console.warn('Falha ao recalcular rota de fluxo:', error);
+      }
+    });
+  }, []);
+
   const importDiagram = useCallback(async (xml: string) => {
     const modeler = modelerRef.current;
     if (!modeler) return;
 
     try {
       await modeler.importXML(xml);
+      if (xml.includes('exporter="tottal-bpm-ai"')) {
+        rerouteAiDraftConnections();
+      }
       const canvas = modeler.get('canvas') as {
         zoom: (level?: number | 'fit-viewport', position?: 'auto') => number | void;
       };
@@ -497,7 +558,7 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
       console.error('Erro ao importar BPMN:', err);
       setErrors(['Erro ao carregar diagrama BPMN']);
     }
-  }, [scheduleTooltipTranslation, scheduleVisualRefresh]);
+  }, [rerouteAiDraftConnections, scheduleTooltipTranslation, scheduleVisualRefresh]);
 
   useEffect(() => {
     connectModeRef.current = connectMode;

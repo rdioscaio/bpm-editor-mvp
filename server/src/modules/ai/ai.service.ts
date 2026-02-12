@@ -41,6 +41,9 @@ interface LayoutInfo {
   y: number;
   width: number;
   height: number;
+  laneIndex: number;
+  row: number;
+  column: number;
 }
 
 type RenderNodeType =
@@ -74,6 +77,14 @@ interface RenderGraph {
 interface LaneSpec {
   id: string;
   name: string;
+}
+
+interface FlowRoutingInfo {
+  flowIndex: number;
+  sourceSlot: number;
+  sourceCount: number;
+  targetSlot: number;
+  targetCount: number;
 }
 
 const LANE_SPECS: LaneSpec[] = [
@@ -524,7 +535,7 @@ export class AiService {
 
     const nodeLayouts = new Map<string, LayoutInfo>();
     const laneByName = new Map(LANE_SPECS.map((lane) => [lane.name, lane]));
-    const laneHeight = 170;
+    const laneHeight = 180;
     const participantX = 80;
     const participantY = 80;
     const laneHeaderWidth = 48;
@@ -532,7 +543,7 @@ export class AiService {
     const orderedNodeIds = this.getMainFlowOrder(graph.nodes, graph.flows);
     const rowCount = orderedNodeIds.length > 10 ? 3 : orderedNodeIds.length > 5 ? 2 : 1;
     const columnsPerRow = Math.ceil(orderedNodeIds.length / rowCount);
-    const horizontalGap = 210;
+    const horizontalGap = 240;
 
     orderedNodeIds.forEach((nodeId, index) => {
       const node = graph.nodes.find((item) => item.id === nodeId);
@@ -564,6 +575,9 @@ export class AiService {
         y,
         width: visual.width,
         height: visual.height,
+        laneIndex,
+        row,
+        column: serpentineCol,
       });
     });
 
@@ -643,8 +657,6 @@ export class AiService {
       .join('\n');
 
     const laneSetXml = this.buildLaneSetXml(graph.nodes, nodeLayouts);
-    const participantName = `${graph.processName} - BPO + IA`;
-
     const shapeElements = graph.nodes
       .map((node) => {
         const layout = nodeLayouts.get(node.id);
@@ -663,7 +675,7 @@ export class AiService {
       .join('\n');
 
     const edgeElements = flowMap
-      .map(({ flow, bpmnId }) => {
+      .map(({ flow, bpmnId }, flowIndex) => {
         const sourceLayout = nodeLayouts.get(flow.source);
         const targetLayout = nodeLayouts.get(flow.target);
 
@@ -671,15 +683,39 @@ export class AiService {
           throw new BadRequestException(`Fluxo ${flow.id} sem edge BPMNDI`);
         }
 
-        const waypoints = this.getWaypoints(sourceLayout, targetLayout)
+        const sourceFlowIds = outgoingByNode.get(flow.source) || [];
+        const targetFlowIds = incomingByNode.get(flow.target) || [];
+        const routing: FlowRoutingInfo = {
+          flowIndex,
+          sourceSlot: Math.max(sourceFlowIds.indexOf(bpmnId), 0),
+          sourceCount: Math.max(sourceFlowIds.length, 1),
+          targetSlot: Math.max(targetFlowIds.indexOf(bpmnId), 0),
+          targetCount: Math.max(targetFlowIds.length, 1),
+        };
+
+        const waypoints = this.getWaypoints(sourceLayout, targetLayout, routing)
           .map((point) => `      <di:waypoint x="${point.x}" y="${point.y}" />`)
           .join('\n');
+
+        const flowLabelBounds = flow.label
+          ? this.getFlowLabelBounds(this.getWaypoints(sourceLayout, targetLayout, routing), flow.label, routing)
+          : null;
+        const flowLabelXml = flowLabelBounds
+          ? [
+              '      <bpmndi:BPMNLabel>',
+              `        <dc:Bounds x="${flowLabelBounds.x}" y="${flowLabelBounds.y}" width="${flowLabelBounds.width}" height="${flowLabelBounds.height}" />`,
+              '      </bpmndi:BPMNLabel>',
+            ].join('\n')
+          : '';
 
         return [
           `    <bpmndi:BPMNEdge id="${bpmnId}_di" bpmnElement="${bpmnId}">`,
           waypoints,
+          flowLabelXml,
           '    </bpmndi:BPMNEdge>',
-        ].join('\n');
+        ]
+          .filter((part) => part.length > 0)
+          .join('\n');
       })
       .join('\n');
 
@@ -713,7 +749,7 @@ export class AiService {
       flowElements,
       '  </bpmn:process>',
       `  <bpmn:collaboration id="${collaborationId}">`,
-      `    <bpmn:participant id="${participantId}" name="${this.escapeXml(participantName)}" processRef="${processId}" />`,
+      `    <bpmn:participant id="${participantId}" processRef="${processId}" />`,
       '  </bpmn:collaboration>',
       `  <bpmndi:BPMNDiagram id="${diagramId}">`,
       `    <bpmndi:BPMNPlane id="${planeId}" bpmnElement="${collaborationId}">`,
@@ -729,36 +765,127 @@ export class AiService {
     return xml;
   }
 
-  private getWaypoints(source: LayoutInfo, target: LayoutInfo): Array<{ x: number; y: number }> {
+  private getWaypoints(
+    source: LayoutInfo,
+    target: LayoutInfo,
+    routing: FlowRoutingInfo,
+  ): Array<{ x: number; y: number }> {
     const sourceCenterY = source.y + source.height / 2;
     const targetCenterY = target.y + target.height / 2;
-    const toRight = target.x >= source.x;
+    const sourceCenterX = source.x + source.width / 2;
+    const targetCenterX = target.x + target.width / 2;
+    const toRight = targetCenterX >= sourceCenterX;
     const sourceAnchorX = toRight ? source.x + source.width : source.x;
     const targetAnchorX = toRight ? target.x : target.x + target.width;
+    const sourceY = sourceCenterY + this.getSlotOffset(routing.sourceSlot, routing.sourceCount, 14);
+    const targetY = targetCenterY + this.getSlotOffset(routing.targetSlot, routing.targetCount, 14);
+    const sameLane = source.laneIndex === target.laneIndex;
+    const isForward = toRight && source.column <= target.column;
 
-    if (Math.abs(sourceCenterY - targetCenterY) <= 4) {
-      return [
-        { x: sourceAnchorX, y: sourceCenterY },
-        { x: targetAnchorX, y: targetCenterY },
-      ];
+    if (sameLane && isForward && Math.abs(sourceY - targetY) <= 10) {
+      return this.compactWaypoints([
+        { x: sourceAnchorX, y: sourceY },
+        { x: targetAnchorX, y: targetY },
+      ]);
     }
 
-    if (Math.abs(sourceAnchorX - targetAnchorX) <= 4) {
-      return [
-        { x: sourceAnchorX, y: sourceCenterY },
-        { x: sourceAnchorX, y: targetCenterY },
-        { x: targetAnchorX, y: targetCenterY },
-      ];
+    if (sameLane && isForward) {
+      const middleX = Math.round((sourceAnchorX + targetAnchorX) / 2) + this.getSlotOffset(routing.flowIndex % 4, 4, 10);
+      return this.compactWaypoints([
+        { x: sourceAnchorX, y: sourceY },
+        { x: middleX, y: sourceY },
+        { x: middleX, y: targetY },
+        { x: targetAnchorX, y: targetY },
+      ]);
     }
 
-    const middleX = Math.round((sourceAnchorX + targetAnchorX) / 2);
+    const sourceEscapeX = sourceAnchorX + (toRight ? 24 : -24);
+    const targetApproachX = targetAnchorX + (toRight ? -24 : 24);
+    const laneDistance = Math.abs(source.laneIndex - target.laneIndex);
+    const rowDistance = Math.abs(source.row - target.row);
+    const sourceTrackOffset = this.getSlotOffset(routing.sourceSlot, routing.sourceCount, 18);
+    const flowTrackOffset = this.getSlotOffset(routing.flowIndex % 5, 5, 12);
+    const corridorBase = toRight
+      ? sourceEscapeX + 46 + sourceTrackOffset
+      : sourceEscapeX - 46 - sourceTrackOffset;
+    const corridorAdjust = laneDistance * 14 + rowDistance * 8 + Math.abs(flowTrackOffset);
+    const corridorX = toRight ? corridorBase + corridorAdjust : corridorBase - corridorAdjust;
 
-    return [
-      { x: sourceAnchorX, y: sourceCenterY },
-      { x: middleX, y: sourceCenterY },
-      { x: middleX, y: targetCenterY },
-      { x: targetAnchorX, y: targetCenterY },
-    ];
+    return this.compactWaypoints([
+      { x: sourceAnchorX, y: sourceY },
+      { x: sourceEscapeX, y: sourceY },
+      { x: corridorX, y: sourceY },
+      { x: corridorX, y: targetY },
+      { x: targetApproachX, y: targetY },
+      { x: targetAnchorX, y: targetY },
+    ]);
+  }
+
+  private getFlowLabelBounds(
+    waypoints: Array<{ x: number; y: number }>,
+    label: string,
+    routing: FlowRoutingInfo,
+  ): { x: number; y: number; width: number; height: number } | null {
+    const normalized = label.trim();
+    if (normalized.length === 0 || waypoints.length < 2) {
+      return null;
+    }
+
+    let bestStart = waypoints[0];
+    let bestEnd = waypoints[1];
+    let bestLength = 0;
+
+    for (let index = 0; index < waypoints.length - 1; index += 1) {
+      const start = waypoints[index];
+      const end = waypoints[index + 1];
+      const length = Math.abs(end.x - start.x) + Math.abs(end.y - start.y);
+
+      if (length > bestLength) {
+        bestStart = start;
+        bestEnd = end;
+        bestLength = length;
+      }
+    }
+
+    const width = Math.min(180, Math.max(48, normalized.length * 6.6));
+    const height = 20;
+    const middleX = (bestStart.x + bestEnd.x) / 2;
+    const middleY = (bestStart.y + bestEnd.y) / 2;
+    const horizontal = Math.abs(bestStart.x - bestEnd.x) >= Math.abs(bestStart.y - bestEnd.y);
+    const labelNudge = this.getSlotOffset(routing.sourceSlot, routing.sourceCount, 8);
+    const x = horizontal ? middleX - width / 2 : middleX + 10 + labelNudge;
+    const y = horizontal ? middleY - 22 + labelNudge : middleY - height / 2;
+
+    return {
+      x: Math.round(x),
+      y: Math.round(y),
+      width: Math.round(width),
+      height,
+    };
+  }
+
+  private getSlotOffset(slot: number, count: number, step: number): number {
+    if (count <= 1) {
+      return 0;
+    }
+
+    const centeredIndex = slot - (count - 1) / 2;
+    return Math.round(centeredIndex * step);
+  }
+
+  private compactWaypoints(points: Array<{ x: number; y: number }>): Array<{ x: number; y: number }> {
+    const rounded = points.map((point) => ({
+      x: Math.round(point.x),
+      y: Math.round(point.y),
+    }));
+
+    return rounded.filter((point, index) => {
+      if (index === 0) {
+        return true;
+      }
+      const previous = rounded[index - 1];
+      return previous.x !== point.x || previous.y !== point.y;
+    });
   }
 
   private buildSubprocessChildrenXml(node: RenderNode): string {
@@ -873,16 +1000,16 @@ export class AiService {
       return { width: 50, height: 50, tagName: 'bpmn:ExclusiveGateway', bpmnPrefix: 'Gateway' };
     }
     if (type === 'subprocess') {
-      return { width: 190, height: 110, tagName: 'bpmn:SubProcess', bpmnPrefix: 'SubProcess' };
+      return { width: 210, height: 118, tagName: 'bpmn:SubProcess', bpmnPrefix: 'SubProcess' };
     }
     if (type === 'user_task') {
-      return { width: 130, height: 88, tagName: 'bpmn:UserTask', bpmnPrefix: 'UserTask' };
+      return { width: 160, height: 94, tagName: 'bpmn:UserTask', bpmnPrefix: 'UserTask' };
     }
     if (type === 'service_task') {
-      return { width: 130, height: 88, tagName: 'bpmn:ServiceTask', bpmnPrefix: 'ServiceTask' };
+      return { width: 160, height: 94, tagName: 'bpmn:ServiceTask', bpmnPrefix: 'ServiceTask' };
     }
     if (type === 'business_rule_task') {
-      return { width: 130, height: 88, tagName: 'bpmn:BusinessRuleTask', bpmnPrefix: 'BusinessRuleTask' };
+      return { width: 160, height: 94, tagName: 'bpmn:BusinessRuleTask', bpmnPrefix: 'BusinessRuleTask' };
     }
 
     return { width: 120, height: 80, tagName: 'bpmn:Task', bpmnPrefix: 'Task' };
