@@ -161,6 +161,62 @@ body {
   font-size: 14px;
 }
 
+.process-description-preview {
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-surface) 90%, transparent);
+  max-height: min(12vh, 112px);
+  overflow-y: auto;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.editor-focus-dropdown {
+  border: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-surface) 95%, transparent);
+}
+
+.editor-focus-dropdown > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.editor-focus-dropdown > summary::-webkit-details-marker {
+  display: none;
+}
+
+.editor-focus-dropdown > summary::after {
+  content: '▾';
+  float: right;
+  opacity: 0.75;
+}
+
+.editor-focus-dropdown[open] > summary::after {
+  transform: rotate(180deg);
+}
+
+.editor-focus-dropdown-content {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  padding: var(--space-2);
+  max-height: 34vh;
+  overflow: auto;
+}
+
+.process-description-dropdown .process-description-preview {
+  margin: 0;
+  border: none;
+  background: transparent;
+  padding: var(--space-1) var(--space-1) var(--space-2);
+  max-height: min(20vh, 180px);
+}
+
 .header-actions {
   display: flex;
   align-items: center;
@@ -199,6 +255,41 @@ body {
   flex-direction: column;
   padding: var(--space-4);
   overflow: hidden;
+}
+
+.editor-shell .app-header {
+  max-height: 30vh;
+  overflow-y: auto;
+}
+
+.editor-shell.editor-focus-mode {
+  padding: var(--space-2);
+}
+
+.editor-shell.editor-focus-mode .app-header {
+  max-height: 24vh;
+  margin-bottom: var(--space-2);
+  padding: var(--space-3);
+}
+
+.editor-shell.editor-focus-mode .editor-header-row {
+  margin-bottom: var(--space-2);
+  gap: var(--space-2);
+}
+
+.editor-shell.editor-focus-mode .header-actions {
+  width: 100%;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.editor-shell.editor-focus-mode .editor-main {
+  padding: var(--space-2);
+}
+
+.editor-shell.editor-focus-mode .editor-canvas-slot {
+  min-height: 80vh;
 }
 
 .editor-header-row {
@@ -313,6 +404,15 @@ body {
   font-family: inherit;
   font-size: 14px;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.process-description-input {
+  min-height: 120px;
+  max-height: 40vh;
+  resize: vertical;
+  overflow-y: auto;
+  line-height: 1.5;
+  white-space: pre-wrap;
 }
 
 .input-field:focus {
@@ -456,6 +556,42 @@ body {
   background: var(--color-info-soft);
   border-color: color-mix(in srgb, var(--color-info) 34%, transparent);
   color: var(--color-info);
+}
+
+.quality-report-panel {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  max-height: min(28vh, 260px);
+  overflow: hidden;
+}
+
+.quality-report-panel-focus {
+  max-height: min(14vh, 130px);
+}
+
+.quality-report-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.quality-report-summary {
+  margin-right: var(--space-1);
+}
+
+.quality-report-findings-count {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.quality-report-details {
+  margin-top: var(--space-1);
+  max-height: min(18vh, 170px);
+  overflow-y: auto;
+  padding-right: var(--space-1);
 }
 
 .empty-state {
@@ -668,6 +804,10 @@ body {
   font-weight: 600;
 }
 
+.djs-element[data-element-id^='Participant_'] .djs-label text {
+  display: none;
+}
+
 .djs-label,
 .djs-visual text {
   fill: var(--color-text);
@@ -700,6 +840,10 @@ body {
   overflow: hidden;
 }
 
+.bpmn-editor-layout.focus-mode {
+  gap: var(--space-2);
+}
+
 .bpmn-editor-main {
   min-width: 0;
   overflow: hidden;
@@ -707,6 +851,53 @@ body {
 
 .bpmn-editor-actions {
   flex-wrap: wrap;
+}
+
+.bpmn-editor-layout.focus-mode .bpmn-editor-actions {
+  margin-bottom: var(--space-2);
+}
+
+.bpmn-container-focus {
+  min-height: 80vh;
+  height: 80vh;
+}
+
+.properties-dropdown {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-surface) 96%, transparent);
+}
+
+.properties-dropdown > summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text);
+  list-style: none;
+}
+
+.properties-dropdown > summary::-webkit-details-marker {
+  display: none;
+}
+
+.properties-dropdown > summary::after {
+  content: '▾';
+  float: right;
+  opacity: 0.75;
+}
+
+.properties-dropdown[open] > summary::after {
+  transform: rotate(180deg);
+}
+
+.properties-dropdown-content {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  padding: var(--space-2);
+}
+
+.properties-dropdown-content .properties-panel {
+  max-height: min(26vh, 280px);
 }
 
 .properties-panel-shell {
@@ -775,6 +966,11 @@ body {
     flex: 0 0 auto;
     min-width: 0;
     max-height: 320px;
+  }
+
+  .bpmn-container-focus {
+    min-height: 65vh;
+    height: 65vh;
   }
 }
 

@@ -21,12 +21,14 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack, theme, onToggle
   const [activeVersionId, setActiveVersionId] = useState<string | null>(null);
   const [connectMode, setConnectMode] = useState(false);
   const [showAiDraft, setShowAiDraft] = useState(false);
+  const [focusMode, setFocusMode] = useState(false);
 
   useEffect(() => {
     setCurrentProcess(process);
     setActiveBpmnXml(undefined);
     setActiveVersionId(null);
     setShowAiDraft(false);
+    setFocusMode(false);
     void loadVersions(process.id, process.currentVersionId);
   }, [process]);
 
@@ -129,17 +131,59 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack, theme, onToggle
   };
 
   const aiDraftSection = showAiDraft ? (
-    <div className="flex-shrink-0 overflow-auto max-h-[42vh]">
-      <AiDraftPanel
-        processName={currentProcess.name}
-        onApplyXml={handleAiApplyXml}
-        onStatus={handleAiStatus}
-      />
-    </div>
+    focusMode ? (
+      <details className="editor-focus-dropdown mb-3">
+        <summary>IA Draft BPMN</summary>
+        <div className="editor-focus-dropdown-content">
+          <AiDraftPanel
+            processName={currentProcess.name}
+            onApplyXml={handleAiApplyXml}
+            onStatus={handleAiStatus}
+          />
+        </div>
+      </details>
+    ) : (
+      <div className="flex-shrink-0 overflow-auto max-h-[42vh]">
+        <AiDraftPanel
+          processName={currentProcess.name}
+          onApplyXml={handleAiApplyXml}
+          onStatus={handleAiStatus}
+        />
+      </div>
+    )
   ) : null;
 
+  const versionsPanelContent = (
+    <>
+      <h2 className="section-title">Versões</h2>
+      {versions.length === 0 ? (
+        <p className="muted-text">Nenhuma versão salva</p>
+      ) : (
+        <div className="versions-list">
+          {versions.map((version) => (
+            <div
+              key={version.id}
+              className={`version-item ${
+                activeVersionId === version.id ? 'version-item-active' : 'version-item-idle'
+              }`}
+            >
+              <p className="version-title">v{version.versionNumber}</p>
+              <p className="version-date">{new Date(version.createdAt).toLocaleString()}</p>
+              <button
+                onClick={() => handleLoadVersion(version.id)}
+                className="btn btn-primary btn-small btn-full"
+              >
+                Carregar
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+
   return (
-    <div className="editor-shell h-screen flex flex-col overflow-hidden">
+    <div className={`editor-shell h-screen flex flex-col overflow-hidden ${focusMode ? 'editor-focus-mode' : ''}`}>
       <header className="app-header">
         <div className="editor-header-row">
           <div className="editor-header-main">
@@ -154,7 +198,16 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack, theme, onToggle
               </button>
             </div>
             <h1 className="page-title">{currentProcess.name}</h1>
-            {currentProcess.description && <p className="page-subtitle">{currentProcess.description}</p>}
+            {currentProcess.description && (
+              focusMode ? (
+                <details className="editor-focus-dropdown process-description-dropdown mt-2">
+                  <summary>Resumo do processo</summary>
+                  <p className="page-subtitle process-description-preview">{currentProcess.description}</p>
+                </details>
+              ) : (
+                <p className="page-subtitle process-description-preview">{currentProcess.description}</p>
+              )
+            )}
           </div>
           <div className="header-actions">
             <button type="button" onClick={onToggleTheme} className="btn btn-ghost" title="Alternar tema dia/noite">
@@ -206,37 +259,25 @@ export const Editor: React.FC<EditorProps> = ({ process, onBack, theme, onToggle
       <div className="editor-layout flex-1 min-h-0 flex overflow-hidden">
         <div className="editor-main flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden">
           {aiDraftSection}
+          {showVersions && focusMode && (
+            <details className="editor-focus-dropdown mb-3">
+              <summary>Versões ({versions.length})</summary>
+              <div className="editor-focus-dropdown-content">{versionsPanelContent}</div>
+            </details>
+          )}
           <div className="editor-canvas-slot flex-1 min-h-0 min-w-0 overflow-hidden">
-            <BpmnEditor bpmnXml={activeBpmnXml} onSave={handleSave} connectMode={connectMode} />
+            <BpmnEditor
+              bpmnXml={activeBpmnXml}
+              onSave={handleSave}
+              connectMode={connectMode}
+              onFocusModeChange={setFocusMode}
+            />
           </div>
         </div>
 
-        {showVersions && (
+        {showVersions && !focusMode && (
           <aside className="versions-sidebar min-h-0 overflow-auto">
-            <h2 className="section-title">Versões</h2>
-            {versions.length === 0 ? (
-              <p className="muted-text">Nenhuma versão salva</p>
-            ) : (
-              <div className="versions-list">
-                {versions.map((version) => (
-                  <div
-                    key={version.id}
-                    className={`version-item ${
-                      activeVersionId === version.id ? 'version-item-active' : 'version-item-idle'
-                    }`}
-                  >
-                    <p className="version-title">v{version.versionNumber}</p>
-                    <p className="version-date">{new Date(version.createdAt).toLocaleString()}</p>
-                    <button
-                      onClick={() => handleLoadVersion(version.id)}
-                      className="btn btn-primary btn-small btn-full"
-                    >
-                      Carregar
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
+            {versionsPanelContent}
           </aside>
         )}
       </div>

@@ -11,6 +11,7 @@ interface BpmnEditorProps {
   onSave?: (bpmnContent: Record<string, any>, svgContent: string) => void;
   readOnly?: boolean;
   connectMode?: boolean;
+  onFocusModeChange?: (enabled: boolean) => void;
 }
 
 const EMPTY_DIAGRAM = `<?xml version="1.0" encoding="UTF-8"?>
@@ -30,6 +31,106 @@ const LABEL_TOP_PADDING = 12;
 const ZOOM_MIN = 0.2;
 const ZOOM_MAX = 2.8;
 const ZOOM_STEP = 0.15;
+const QUALITY_THRESHOLD = 80;
+const AUTO_LAYOUT_MIN_COLUMN_GAP = 170;
+const AUTO_LAYOUT_MAX_COLUMN_GAP = 250;
+const AUTO_LAYOUT_ROW_GAP = 110;
+const AUTO_LAYOUT_LANE_VERTICAL_PADDING = 42;
+
+interface BoundsBox {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+interface QualityMetrics {
+  shapeOverlaps: number;
+  labelOverlaps: number;
+  labelShapeOverlaps: number;
+  edgeShapeCrossings: number;
+  edgeEdgeCrossings: number;
+  emptyLanes: number;
+}
+
+interface QualityReport {
+  score: number;
+  threshold: number;
+  metrics: QualityMetrics;
+  emptyLaneElementIds: string[];
+  issues: string[];
+  warnings: string[];
+}
+
+interface PngExportOptions {
+  width: number;
+  height: number;
+  qualityScale: number;
+  fileName: string;
+}
+
+const toBoundsBox = (element: { x: number; y: number; width: number; height: number }): BoundsBox => ({
+  left: element.x,
+  top: element.y,
+  right: element.x + element.width,
+  bottom: element.y + element.height,
+});
+
+const boundsOverlap = (a: BoundsBox, b: BoundsBox, gap = 0): boolean =>
+  !(a.right <= b.left + gap || b.right <= a.left + gap || a.bottom <= b.top + gap || b.bottom <= a.top + gap);
+
+const pointInBounds = (point: { x: number; y: number }, bounds: BoundsBox): boolean =>
+  point.x >= bounds.left && point.x <= bounds.right && point.y >= bounds.top && point.y <= bounds.bottom;
+
+const orientation = (a: { x: number; y: number }, b: { x: number; y: number }, c: { x: number; y: number }) =>
+  (b.y - a.y) * (c.x - b.x) - (b.x - a.x) * (c.y - b.y);
+
+const isOnSegment = (a: { x: number; y: number }, b: { x: number; y: number }, c: { x: number; y: number }) =>
+  Math.min(a.x, c.x) <= b.x &&
+  b.x <= Math.max(a.x, c.x) &&
+  Math.min(a.y, c.y) <= b.y &&
+  b.y <= Math.max(a.y, c.y);
+
+const segmentsIntersect = (
+  a1: { x: number; y: number },
+  a2: { x: number; y: number },
+  b1: { x: number; y: number },
+  b2: { x: number; y: number },
+) => {
+  const o1 = orientation(a1, a2, b1);
+  const o2 = orientation(a1, a2, b2);
+  const o3 = orientation(b1, b2, a1);
+  const o4 = orientation(b1, b2, a2);
+
+  if (o1 === 0 && isOnSegment(a1, b1, a2)) return true;
+  if (o2 === 0 && isOnSegment(a1, b2, a2)) return true;
+  if (o3 === 0 && isOnSegment(b1, a1, b2)) return true;
+  if (o4 === 0 && isOnSegment(b1, a2, b2)) return true;
+
+  return (o1 > 0) !== (o2 > 0) && (o3 > 0) !== (o4 > 0);
+};
+
+const segmentIntersectsBounds = (
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  bounds: BoundsBox,
+) => {
+  if (pointInBounds(start, bounds) || pointInBounds(end, bounds)) {
+    return true;
+  }
+
+  const topLeft = { x: bounds.left, y: bounds.top };
+  const topRight = { x: bounds.right, y: bounds.top };
+  const bottomRight = { x: bounds.right, y: bounds.bottom };
+  const bottomLeft = { x: bounds.left, y: bounds.bottom };
+
+  return (
+    segmentsIntersect(start, end, topLeft, topRight) ||
+    segmentsIntersect(start, end, topRight, bottomRight) ||
+    segmentsIntersect(start, end, bottomRight, bottomLeft) ||
+    segmentsIntersect(start, end, bottomLeft, topLeft)
+  );
+};
 
 const EXACT_TOOLTIP_TRANSLATIONS: Record<string, string> = {
   'Activate the hand tool': 'Ativar ferramenta de mão',
@@ -154,6 +255,7 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
   onSave,
   readOnly = false,
   connectMode = false,
+  onFocusModeChange,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const modelerRef = useRef<BpmnModeler | null>(null);
@@ -167,6 +269,15 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
   const [errors, setErrors] = useState<string[]>([]);
   const [modelerReady, setModelerReady] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [qualityReport, setQualityReport] = useState<QualityReport | null>(null);
+  const [qualityDetailsOpen, setQualityDetailsOpen] = useState(false);
+  const [laneCleanupUndoSteps, setLaneCleanupUndoSteps] = useState(0);
+  const [focusMode, setFocusMode] = useState(false);
+  const [focusPropertiesOpen, setFocusPropertiesOpen] = useState(false);
+
+  useEffect(() => {
+    onFocusModeChange?.(focusMode);
+  }, [focusMode, onFocusModeChange]);
 
   const getMeasureContext = useCallback(() => {
     if (measureContextRef.current) {
@@ -283,8 +394,13 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
     if (!gfx) return null;
 
     const selector = element.type === 'label' ? '.djs-label text, .djs-visual text' : '.djs-visual text, .djs-label text';
-    const textNode = gfx.querySelector<SVGTextElement>(selector);
-    if (!textNode) return null;
+    const textNodes = Array.from(gfx.querySelectorAll<SVGTextElement>(selector));
+    if (textNodes.length === 0) return null;
+
+    const [textNode, ...duplicates] = textNodes;
+    duplicates.forEach((duplicateNode) => {
+      duplicateNode.parentNode?.removeChild(duplicateNode);
+    });
 
     return { gfx, textNode };
   }, []);
@@ -430,7 +546,7 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
         gfx?.querySelector<SVGTextElement>('.djs-label text') ||
         gfx?.querySelector<SVGTextElement>('text');
       if (laneLabelText) {
-        laneLabelText.setAttribute('font-size', '12');
+        laneLabelText.setAttribute('font-size', '11');
         laneLabelText.setAttribute('font-weight', '600');
         laneLabelText.setAttribute('letter-spacing', '0.01em');
       }
@@ -462,6 +578,18 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
       refreshDiagramVisuals();
     });
   }, [refreshDiagramVisuals]);
+
+  useEffect(() => {
+    if (!modelerReady || !modelerRef.current) return;
+
+    if (focusMode) {
+      const canvas = modelerRef.current.get('canvas') as {
+        zoom: (value?: number | 'fit-viewport', center?: 'auto') => number | void;
+      };
+      canvas.zoom('fit-viewport', 'auto');
+      scheduleVisualRefresh();
+    }
+  }, [focusMode, modelerReady, scheduleVisualRefresh]);
 
   const applyPortugueseTooltips = useCallback(() => {
     if (!containerRef.current) return;
@@ -544,7 +672,9 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
 
     try {
       await modeler.importXML(xml);
-      if (xml.includes('exporter="tottal-bpm-ai"')) {
+      const isAiDraftExporter = xml.includes('exporter="tottal-bpm-ai"');
+      const hasDiagramEdges = xml.includes('<bpmndi:BPMNEdge');
+      if (isAiDraftExporter && !hasDiagramEdges) {
         rerouteAiDraftConnections();
       }
       const canvas = modeler.get('canvas') as {
@@ -740,10 +870,677 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
     return modelerRef.current;
   };
 
+  const calculateQualityReport = useCallback((): QualityReport => {
+    const modeler = getActiveModeler();
+    const elementRegistry = modeler.get('elementRegistry') as {
+      filter: (matcher: (element: any) => boolean) => any[];
+    };
+
+    const allElements = elementRegistry.filter(() => true);
+    const sequenceConnections = allElements.filter(
+      (element) => element?.businessObject && element?.waypoints && is(element.businessObject, 'bpmn:SequenceFlow'),
+    );
+    const laneElements = allElements.filter(
+      (element) => element?.businessObject && is(element.businessObject, 'bpmn:Lane'),
+    );
+    const emptyLaneElements = laneElements.filter((lane) => {
+      const flowNodeRef = lane?.businessObject?.flowNodeRef;
+      return !Array.isArray(flowNodeRef) || flowNodeRef.length === 0;
+    });
+
+    const shapeElements = allElements.filter((element) => {
+      if (!element?.businessObject || element?.waypoints) return false;
+      if (element.type === 'label') return false;
+      if (is(element.businessObject, 'bpmn:Lane') || is(element.businessObject, 'bpmn:Participant')) return false;
+      return Number.isFinite(element.width) && Number.isFinite(element.height) && element.width > 0 && element.height > 0;
+    });
+
+    const labelElements = allElements.filter((element) => {
+      if (element.type !== 'label') return false;
+      return Number.isFinite(element.width) && Number.isFinite(element.height) && element.width > 6 && element.height > 6;
+    });
+
+    const shapeBounds = new Map<string, BoundsBox>(
+      shapeElements.map((shape) => [shape.id, toBoundsBox(shape)]),
+    );
+    const labelBounds = new Map<string, BoundsBox>(
+      labelElements.map((label) => [label.id, toBoundsBox(label)]),
+    );
+
+    let shapeOverlaps = 0;
+    for (let i = 0; i < shapeElements.length; i += 1) {
+      for (let j = i + 1; j < shapeElements.length; j += 1) {
+        if (boundsOverlap(shapeBounds.get(shapeElements[i].id)!, shapeBounds.get(shapeElements[j].id)!, 1)) {
+          shapeOverlaps += 1;
+        }
+      }
+    }
+
+    let labelOverlaps = 0;
+    for (let i = 0; i < labelElements.length; i += 1) {
+      for (let j = i + 1; j < labelElements.length; j += 1) {
+        if (boundsOverlap(labelBounds.get(labelElements[i].id)!, labelBounds.get(labelElements[j].id)!, 1)) {
+          labelOverlaps += 1;
+        }
+      }
+    }
+
+    let labelShapeOverlaps = 0;
+    labelElements.forEach((label) => {
+      const currentLabelBounds = labelBounds.get(label.id)!;
+      const overlapsAnyShape = shapeElements.some((shape) => {
+        const shapeId = shape.id;
+        if (label.labelTarget?.id && label.labelTarget.id === shapeId) {
+          return false;
+        }
+        return boundsOverlap(currentLabelBounds, shapeBounds.get(shapeId)!, 1);
+      });
+
+      if (overlapsAnyShape) {
+        labelShapeOverlaps += 1;
+      }
+    });
+
+    let edgeShapeCrossings = 0;
+    sequenceConnections.forEach((connection) => {
+      const sourceId = connection.source?.id;
+      const targetId = connection.target?.id;
+      const points = Array.isArray(connection.waypoints) ? connection.waypoints : [];
+      if (points.length < 2) return;
+
+      for (const shape of shapeElements) {
+        if (shape.id === sourceId || shape.id === targetId) continue;
+        const bounds = shapeBounds.get(shape.id)!;
+        let intersects = false;
+        for (let pointIndex = 0; pointIndex < points.length - 1; pointIndex += 1) {
+          if (segmentIntersectsBounds(points[pointIndex], points[pointIndex + 1], bounds)) {
+            intersects = true;
+            break;
+          }
+        }
+        if (intersects) {
+          edgeShapeCrossings += 1;
+        }
+      }
+    });
+
+    let edgeEdgeCrossings = 0;
+    for (let i = 0; i < sequenceConnections.length; i += 1) {
+      const first = sequenceConnections[i];
+      const firstPoints = Array.isArray(first.waypoints) ? first.waypoints : [];
+      if (firstPoints.length < 2) continue;
+
+      for (let j = i + 1; j < sequenceConnections.length; j += 1) {
+        const second = sequenceConnections[j];
+        if (
+          first.source?.id === second.source?.id ||
+          first.source?.id === second.target?.id ||
+          first.target?.id === second.source?.id ||
+          first.target?.id === second.target?.id
+        ) {
+          continue;
+        }
+
+        const secondPoints = Array.isArray(second.waypoints) ? second.waypoints : [];
+        if (secondPoints.length < 2) continue;
+
+        let hasCrossing = false;
+        for (let firstIndex = 0; firstIndex < firstPoints.length - 1 && !hasCrossing; firstIndex += 1) {
+          for (let secondIndex = 0; secondIndex < secondPoints.length - 1; secondIndex += 1) {
+            if (
+              segmentsIntersect(
+                firstPoints[firstIndex],
+                firstPoints[firstIndex + 1],
+                secondPoints[secondIndex],
+                secondPoints[secondIndex + 1],
+              )
+            ) {
+              hasCrossing = true;
+              break;
+            }
+          }
+        }
+
+        if (hasCrossing) {
+          edgeEdgeCrossings += 1;
+        }
+      }
+    }
+
+    const metrics: QualityMetrics = {
+      shapeOverlaps,
+      labelOverlaps,
+      labelShapeOverlaps,
+      edgeShapeCrossings,
+      edgeEdgeCrossings,
+      emptyLanes: emptyLaneElements.length,
+    };
+
+    const rawScore =
+      100 -
+      metrics.shapeOverlaps * 18 -
+      metrics.labelOverlaps * 12 -
+      metrics.labelShapeOverlaps * 9 -
+      metrics.edgeShapeCrossings * 10 -
+      Math.min(metrics.edgeEdgeCrossings, 18) * 2 -
+      metrics.emptyLanes * 4;
+    const score = clamp(Math.round(rawScore), 0, 100);
+
+    const issues: string[] = [];
+    const warnings: string[] = [];
+
+    if (metrics.shapeOverlaps > 0) {
+      issues.push(`${metrics.shapeOverlaps} sobreposição(ões) entre tarefas/eventos.`);
+    }
+    if (metrics.labelOverlaps > 0) {
+      issues.push(`${metrics.labelOverlaps} colisão(ões) entre labels.`);
+    }
+    if (metrics.labelShapeOverlaps > 0) {
+      issues.push(`${metrics.labelShapeOverlaps} label(s) sobrepondo nós de processo.`);
+    }
+    if (metrics.edgeShapeCrossings > 0) {
+      issues.push(`${metrics.edgeShapeCrossings} conexão(ões) atravessando atividades.`);
+    }
+    if (metrics.edgeEdgeCrossings > 0) {
+      warnings.push(`${metrics.edgeEdgeCrossings} cruzamento(s) entre conexões.`);
+    }
+    if (metrics.emptyLanes > 0) {
+      warnings.push(`${metrics.emptyLanes} lane(s) vazia(s) detectada(s).`);
+    }
+
+    return {
+      score,
+      threshold: QUALITY_THRESHOLD,
+      metrics,
+      emptyLaneElementIds: emptyLaneElements.map((lane) => lane.id),
+      issues,
+      warnings,
+    };
+  }, []);
+
+  const handleCheckQuality = useCallback(() => {
+    try {
+      const report = calculateQualityReport();
+      setQualityReport(report);
+      setQualityDetailsOpen(false);
+      setErrors([]);
+    } catch (err: any) {
+      setErrors([`Erro ao avaliar qualidade: ${err.message}`]);
+    }
+  }, [calculateQualityReport]);
+
+  const redistributeParticipantLanes = useCallback((participantIds: string[]): number => {
+    if (participantIds.length === 0) {
+      return 0;
+    }
+
+    const modeler = getActiveModeler();
+    const elementRegistry = modeler.get('elementRegistry') as {
+      get: (id: string) => any;
+    };
+    const modeling = modeler.get('modeling') as {
+      resizeShape: (shape: any, bounds: { x: number; y: number; width: number; height: number }) => void;
+    };
+
+    let resizedLanes = 0;
+    const uniqueParticipantIds = Array.from(new Set(participantIds));
+
+    uniqueParticipantIds.forEach((participantId) => {
+      const participant = elementRegistry.get(participantId);
+      if (!participant?.businessObject || !is(participant.businessObject, 'bpmn:Participant')) {
+        return;
+      }
+
+      const participantChildren = Array.isArray(participant.children) ? participant.children : [];
+      const lanes = participantChildren
+        .filter((child: any) => child?.businessObject && is(child.businessObject, 'bpmn:Lane'))
+        .sort((a: any, b: any) => (a.y ?? 0) - (b.y ?? 0));
+
+      if (lanes.length === 0) {
+        return;
+      }
+
+      const participantHeight = Math.max(1, Math.round(participant.height || 0));
+      const minLaneHeight = participantHeight <= lanes.length * 72
+        ? Math.max(1, Math.floor(participantHeight / lanes.length))
+        : 72;
+
+      const lanePlans = lanes.map((lane: any) => {
+        const laneChildren = Array.isArray(lane.children)
+          ? lane.children.filter((child: any) => {
+              if (!child || child.type === 'label' || child.waypoints) return false;
+              if (!child.businessObject) return false;
+              if (is(child.businessObject, 'bpmn:Lane') || is(child.businessObject, 'bpmn:Participant')) return false;
+              return Number.isFinite(child.width) && Number.isFinite(child.height);
+            })
+          : [];
+
+        const contentWeight = Math.max(1, laneChildren.length);
+        const defaultRequired = 110;
+
+        if (laneChildren.length === 0) {
+          return {
+            lane,
+            weight: contentWeight,
+            requiredHeight: Math.max(minLaneHeight, defaultRequired),
+          };
+        }
+
+        const contentTop = Math.min(...laneChildren.map((child: any) => child.y));
+        const contentBottom = Math.max(...laneChildren.map((child: any) => child.y + child.height));
+        const contentHeight = Math.max(0, contentBottom - contentTop);
+        const requiredHeight = Math.max(minLaneHeight, Math.min(participantHeight, Math.round(contentHeight + 72)));
+
+        return {
+          lane,
+          weight: contentWeight,
+          requiredHeight,
+        };
+      });
+
+      let targetHeights = lanePlans.map((plan) => plan.requiredHeight);
+      const totalRequired = targetHeights.reduce((sum, value) => sum + value, 0);
+
+      if (totalRequired > participantHeight) {
+        const scale = participantHeight / totalRequired;
+        targetHeights = targetHeights.map((height) => Math.max(minLaneHeight, Math.floor(height * scale)));
+
+        let overflow = targetHeights.reduce((sum, value) => sum + value, 0) - participantHeight;
+        while (overflow > 0) {
+          let changed = false;
+          for (let index = 0; index < targetHeights.length && overflow > 0; index += 1) {
+            if (targetHeights[index] <= minLaneHeight) {
+              continue;
+            }
+            targetHeights[index] -= 1;
+            overflow -= 1;
+            changed = true;
+          }
+          if (!changed) {
+            break;
+          }
+        }
+
+        if (overflow > 0) {
+          const base = Math.max(1, Math.floor(participantHeight / targetHeights.length));
+          targetHeights = targetHeights.map((_value, index) =>
+            index === targetHeights.length - 1
+              ? Math.max(1, participantHeight - base * (targetHeights.length - 1))
+              : base);
+        }
+      } else if (totalRequired < participantHeight) {
+        const freeHeight = participantHeight - totalRequired;
+        const totalWeight = lanePlans.reduce((sum, plan) => sum + plan.weight, 0) || lanePlans.length;
+        targetHeights = targetHeights.map((height, index) =>
+          height + Math.floor((freeHeight * lanePlans[index].weight) / totalWeight));
+
+        let remainder = participantHeight - targetHeights.reduce((sum, value) => sum + value, 0);
+        let cursor = 0;
+        while (remainder > 0) {
+          targetHeights[cursor % targetHeights.length] += 1;
+          remainder -= 1;
+          cursor += 1;
+        }
+      }
+
+      let nextLaneY = participant.y;
+      lanePlans.forEach((plan, index) => {
+        const laneShape = plan.lane;
+        const targetHeight = Math.max(1, targetHeights[index]);
+        const targetBounds = {
+          x: laneShape.x,
+          y: nextLaneY,
+          width: laneShape.width,
+          height: targetHeight,
+        };
+
+        const moved = Math.abs((laneShape.y ?? 0) - nextLaneY) > 0.5;
+        const resized = Math.abs((laneShape.height ?? 0) - targetHeight) > 0.5;
+
+        if (moved || resized) {
+          modeling.resizeShape(laneShape, targetBounds);
+          resizedLanes += 1;
+        }
+        nextLaneY += targetHeight;
+      });
+    });
+
+    return resizedLanes;
+  }, []);
+
+  const handleCleanEmptyLanes = useCallback(() => {
+    try {
+      const report = qualityReport || calculateQualityReport();
+      if (report.emptyLaneElementIds.length === 0) {
+        setErrors(['Nenhuma lane vazia para limpar.']);
+        return;
+      }
+
+      const modeler = getActiveModeler();
+      const elementRegistry = modeler.get('elementRegistry') as {
+        get: (id: string) => any;
+      };
+      const modeling = modeler.get('modeling') as {
+        removeShape: (shape: any) => void;
+      };
+
+      const lanesToRemove = report.emptyLaneElementIds
+        .map((laneId) => elementRegistry.get(laneId))
+        .filter(Boolean)
+        .sort((a, b) => (b.y ?? 0) - (a.y ?? 0));
+
+      const participantIds = lanesToRemove
+        .map((lane) => lane.parent?.id)
+        .filter((participantId): participantId is string => typeof participantId === 'string' && participantId.length > 0);
+
+      let removed = 0;
+      lanesToRemove.forEach((lane) => {
+        modeling.removeShape(lane);
+        removed += 1;
+      });
+
+      const laneResizes = redistributeParticipantLanes(participantIds);
+      setLaneCleanupUndoSteps(removed + laneResizes);
+      scheduleVisualRefresh();
+      const nextReport = calculateQualityReport();
+      setQualityReport(nextReport);
+      setQualityDetailsOpen(nextReport.emptyLaneElementIds.length > 0);
+      setErrors([]);
+    } catch (err: any) {
+      setErrors([`Erro ao limpar lanes: ${err.message}`]);
+    }
+  }, [calculateQualityReport, qualityReport, redistributeParticipantLanes, scheduleVisualRefresh]);
+
+  const handleUndoLaneCleanup = useCallback(() => {
+    if (laneCleanupUndoSteps < 1) return;
+
+    try {
+      const modeler = getActiveModeler();
+      const commandStack = modeler.get('commandStack') as {
+        canUndo: () => boolean;
+        undo: () => void;
+      };
+
+      let undone = 0;
+      while (undone < laneCleanupUndoSteps && commandStack.canUndo()) {
+        commandStack.undo();
+        undone += 1;
+      }
+
+      setLaneCleanupUndoSteps(0);
+      scheduleVisualRefresh();
+      const report = calculateQualityReport();
+      setQualityReport(report);
+      setQualityDetailsOpen(false);
+      setErrors([]);
+    } catch (err: any) {
+      setErrors([`Erro ao desfazer limpeza de lanes: ${err.message}`]);
+    }
+  }, [calculateQualityReport, laneCleanupUndoSteps, scheduleVisualRefresh]);
+
+  const handleAutoArrange = useCallback(() => {
+    try {
+      const modeler = getActiveModeler();
+      const elementRegistry = modeler.get('elementRegistry') as {
+        filter: (matcher: (element: any) => boolean) => any[];
+        get: (id: string) => any;
+      };
+      const modeling = modeler.get('modeling') as {
+        moveShape: (shape: any, delta: { x: number; y: number }, newParent?: any) => void;
+        resizeShape: (shape: any, bounds: { x: number; y: number; width: number; height: number }) => void;
+      };
+      const canvas = modeler.get('canvas') as {
+        zoom: (value?: number | 'fit-viewport', center?: 'auto') => number | void;
+      };
+
+      const allElements = elementRegistry.filter(() => true);
+
+      const participant = allElements.find(
+        (element) =>
+          element?.businessObject &&
+          !element?.waypoints &&
+          element.type !== 'label' &&
+          is(element.businessObject, 'bpmn:Participant'),
+      );
+
+      let lanes = allElements
+        .filter(
+          (element) =>
+            element?.businessObject &&
+            !element?.waypoints &&
+            element.type !== 'label' &&
+            is(element.businessObject, 'bpmn:Lane'),
+        )
+        .sort((a, b) => (a.y ?? 0) - (b.y ?? 0));
+
+      const flowNodes = allElements.filter((element) => {
+        if (!element?.businessObject || element?.waypoints || element.type === 'label') return false;
+        if (is(element.businessObject, 'bpmn:Participant') || is(element.businessObject, 'bpmn:Lane')) return false;
+
+        return (
+          is(element.businessObject, 'bpmn:StartEvent') ||
+          is(element.businessObject, 'bpmn:EndEvent') ||
+          is(element.businessObject, 'bpmn:Task') ||
+          is(element.businessObject, 'bpmn:SubProcess') ||
+          is(element.businessObject, 'bpmn:CallActivity') ||
+          is(element.businessObject, 'bpmn:Gateway')
+        );
+      });
+
+      if (flowNodes.length < 2) {
+        setErrors(['Layout automático: adicione mais elementos de processo para organizar.']);
+        return;
+      }
+
+      const nodeById = new Map(flowNodes.map((node) => [node.id, node]));
+      const originalOrder = new Map(flowNodes.map((node, index) => [node.id, index]));
+      const nodeIds = new Set(flowNodes.map((node) => node.id));
+
+      const sequenceConnections = allElements.filter(
+        (element) =>
+          element?.waypoints &&
+          element?.businessObject &&
+          is(element.businessObject, 'bpmn:SequenceFlow'),
+      );
+
+      const outgoingByNode = new Map<string, string[]>();
+      const incomingByNode = new Map<string, string[]>();
+      const indegree = new Map<string, number>();
+      flowNodes.forEach((node) => indegree.set(node.id, 0));
+
+      sequenceConnections.forEach((connection) => {
+        const sourceId = connection.source?.id;
+        const targetId = connection.target?.id;
+        if (!sourceId || !targetId || !nodeIds.has(sourceId) || !nodeIds.has(targetId)) {
+          return;
+        }
+
+        const outgoing = outgoingByNode.get(sourceId) || [];
+        outgoing.push(targetId);
+        outgoingByNode.set(sourceId, outgoing);
+
+        const incoming = incomingByNode.get(targetId) || [];
+        incoming.push(sourceId);
+        incomingByNode.set(targetId, incoming);
+
+        indegree.set(targetId, (indegree.get(targetId) || 0) + 1);
+      });
+
+      const rankByNodeId = new Map<string, number>();
+      flowNodes.forEach((node) => rankByNodeId.set(node.id, 0));
+
+      const queue = flowNodes
+        .filter((node) => (indegree.get(node.id) || 0) === 0)
+        .sort((a, b) => (a.x ?? 0) - (b.x ?? 0) || (a.y ?? 0) - (b.y ?? 0));
+
+      const processed = new Set<string>();
+      while (queue.length > 0) {
+        const node = queue.shift()!;
+        if (processed.has(node.id)) {
+          continue;
+        }
+        processed.add(node.id);
+
+        const sourceRank = rankByNodeId.get(node.id) || 0;
+        const targets = outgoingByNode.get(node.id) || [];
+        targets.forEach((targetId) => {
+          rankByNodeId.set(targetId, Math.max(rankByNodeId.get(targetId) || 0, sourceRank + 1));
+          const nextIndegree = (indegree.get(targetId) || 0) - 1;
+          indegree.set(targetId, nextIndegree);
+          if (nextIndegree <= 0) {
+            const targetNode = nodeById.get(targetId);
+            if (targetNode) {
+              queue.push(targetNode);
+              queue.sort((a, b) => (a.x ?? 0) - (b.x ?? 0) || (a.y ?? 0) - (b.y ?? 0));
+            }
+          }
+        });
+      }
+
+      const unresolved = flowNodes
+        .filter((node) => !processed.has(node.id))
+        .sort((a, b) => (a.x ?? 0) - (b.x ?? 0) || (a.y ?? 0) - (b.y ?? 0));
+
+      unresolved.forEach((node) => {
+        const incoming = incomingByNode.get(node.id) || [];
+        const fallbackRank = incoming.length > 0
+          ? Math.max(...incoming.map((sourceId) => rankByNodeId.get(sourceId) || 0)) + 1
+          : 0;
+        rankByNodeId.set(node.id, Math.max(rankByNodeId.get(node.id) || 0, fallbackRank));
+      });
+
+      const laneByNodeId = new Map<string, any>();
+      const resolveLaneForNode = (node: any) => {
+        if (node.parent?.businessObject && is(node.parent.businessObject, 'bpmn:Lane')) {
+          return node.parent;
+        }
+
+        if (lanes.length === 0) {
+          return null;
+        }
+
+        const centerY = (node.y || 0) + ((node.height || 0) / 2);
+        const containingLane = lanes.find((lane) => centerY >= lane.y && centerY <= lane.y + lane.height);
+        return containingLane || lanes[0];
+      };
+
+      flowNodes.forEach((node) => {
+        laneByNodeId.set(node.id, resolveLaneForNode(node));
+      });
+
+      const maxRank = Math.max(...Array.from(rankByNodeId.values()), 0);
+      const maxNodeWidth = Math.max(...flowNodes.map((node) => node.width || 120), 120);
+
+      const getHorizontalBounds = () => {
+        if (lanes.length > 0) {
+          const left = Math.min(...lanes.map((lane) => lane.x));
+          const right = Math.max(...lanes.map((lane) => lane.x + lane.width));
+          return { left: left + 28, right: right - 28 };
+        }
+
+        const minX = Math.min(...flowNodes.map((node) => node.x || 0));
+        const maxX = Math.max(...flowNodes.map((node) => (node.x || 0) + (node.width || 0)));
+        return { left: minX + 20, right: maxX + 220 };
+      };
+
+      let horizontal = getHorizontalBounds();
+      const columns = Math.max(maxRank + 1, 1);
+      const estimatedGap = columns > 1
+        ? Math.floor((horizontal.right - horizontal.left - maxNodeWidth - 24) / Math.max(columns - 1, 1))
+        : AUTO_LAYOUT_MAX_COLUMN_GAP;
+      let columnGap = clamp(estimatedGap, AUTO_LAYOUT_MIN_COLUMN_GAP, AUTO_LAYOUT_MAX_COLUMN_GAP);
+
+      const neededWidth = maxNodeWidth + ((columns - 1) * columnGap) + 40;
+      const availableWidth = horizontal.right - horizontal.left;
+      if (participant && neededWidth > availableWidth) {
+        const extraWidth = neededWidth - availableWidth + 40;
+        modeling.resizeShape(participant, {
+          x: participant.x,
+          y: participant.y,
+          width: participant.width + extraWidth,
+          height: participant.height,
+        });
+
+        lanes = lanes.map((lane) => elementRegistry.get(lane.id)).filter(Boolean);
+        horizontal = getHorizontalBounds();
+
+        const recalcGap = columns > 1
+          ? Math.floor((horizontal.right - horizontal.left - maxNodeWidth - 24) / Math.max(columns - 1, 1))
+          : AUTO_LAYOUT_MAX_COLUMN_GAP;
+        columnGap = clamp(recalcGap, AUTO_LAYOUT_MIN_COLUMN_GAP, AUTO_LAYOUT_MAX_COLUMN_GAP);
+      }
+
+      const laneNodeGroups = new Map<string, any[]>();
+      flowNodes.forEach((node) => {
+        const lane = laneByNodeId.get(node.id);
+        const laneKey = lane?.id || '__default_lane__';
+        const list = laneNodeGroups.get(laneKey) || [];
+        list.push(node);
+        laneNodeGroups.set(laneKey, list);
+      });
+
+      const fallbackLane = lanes[0] || null;
+      flowNodes.forEach((node) => {
+        const lane = laneByNodeId.get(node.id) || fallbackLane;
+        const laneNodes = (laneNodeGroups.get(lane?.id || '__default_lane__') || [])
+          .sort((a, b) =>
+            (rankByNodeId.get(a.id) || 0) - (rankByNodeId.get(b.id) || 0) ||
+            (a.y ?? 0) - (b.y ?? 0) ||
+            (originalOrder.get(a.id) || 0) - (originalOrder.get(b.id) || 0));
+
+        const laneIndex = laneNodes.findIndex((candidate) => candidate.id === node.id);
+        const laneTop = lane ? lane.y : (Math.min(...flowNodes.map((n) => n.y || 0)) - 20);
+        const rank = rankByNodeId.get(node.id) || 0;
+
+        const targetX = horizontal.left + (rank * columnGap);
+        const targetY = laneTop + AUTO_LAYOUT_LANE_VERTICAL_PADDING + (Math.max(laneIndex, 0) * AUTO_LAYOUT_ROW_GAP);
+        const delta = {
+          x: targetX - node.x,
+          y: targetY - node.y,
+        };
+
+        if (Math.abs(delta.x) > 0.5 || Math.abs(delta.y) > 0.5) {
+          modeling.moveShape(node, delta, lane || undefined);
+        }
+      });
+
+      if (participant) {
+        redistributeParticipantLanes([participant.id]);
+      }
+
+      rerouteAiDraftConnections();
+      canvas.zoom('fit-viewport', 'auto');
+      scheduleVisualRefresh();
+
+      const report = calculateQualityReport();
+      setQualityReport(report);
+      setQualityDetailsOpen(false);
+      setErrors([]);
+    } catch (err: any) {
+      setErrors([`Erro ao organizar diagrama automaticamente: ${err.message}`]);
+    }
+  }, [calculateQualityReport, redistributeParticipantLanes, rerouteAiDraftConnections, scheduleVisualRefresh]);
+
+  const runExportWithQualityGate = useCallback(async (action: () => Promise<void>) => {
+    const report = calculateQualityReport();
+    setQualityReport(report);
+
+    if (report.score < report.threshold) {
+      setQualityDetailsOpen(true);
+      setErrors([]);
+    }
+
+    await action();
+  }, [calculateQualityReport]);
+
   const handleSave = async () => {
     if (readOnly) return;
 
     try {
+      const report = calculateQualityReport();
+      setQualityReport(report);
+      setQualityDetailsOpen(false);
+
       const modeler = getActiveModeler();
       const { xml } = await modeler.saveXML({ format: true });
       const { svg } = await modeler.saveSVG();
@@ -755,7 +1552,13 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
       };
 
       onSave?.(bpmnContent, svg);
-      setErrors([]);
+      if (report.score < report.threshold) {
+        setErrors([
+          `Versão salva com warning: score ${report.score}/100 (mínimo ${report.threshold}).`,
+        ]);
+      } else {
+        setErrors([]);
+      }
     } catch (err: any) {
       setErrors([`Erro ao salvar: ${err.message}`]);
     }
@@ -771,6 +1574,142 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
     URL.revokeObjectURL(url);
   };
 
+  const downloadBlob = (blob: Blob, fileName: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const getSvgSourceSize = (svg: string, fallbackWidth: number, fallbackHeight: number) => {
+    const parser = new DOMParser();
+    const parsedSvg = parser.parseFromString(svg, 'image/svg+xml').documentElement;
+    const widthAttr = parsedSvg.getAttribute('width');
+    const heightAttr = parsedSvg.getAttribute('height');
+    const viewBoxAttr = parsedSvg.getAttribute('viewBox');
+
+    const widthFromAttr = widthAttr ? Number.parseFloat(widthAttr) : Number.NaN;
+    const heightFromAttr = heightAttr ? Number.parseFloat(heightAttr) : Number.NaN;
+
+    if (Number.isFinite(widthFromAttr) && widthFromAttr > 0 && Number.isFinite(heightFromAttr) && heightFromAttr > 0) {
+      return {
+        width: widthFromAttr,
+        height: heightFromAttr,
+      };
+    }
+
+    if (viewBoxAttr) {
+      const parts = viewBoxAttr
+        .split(/\s+/)
+        .map((part) => Number.parseFloat(part))
+        .filter((part) => Number.isFinite(part));
+      if (parts.length === 4 && parts[2] > 0 && parts[3] > 0) {
+        return {
+          width: parts[2],
+          height: parts[3],
+        };
+      }
+    }
+
+    return {
+      width: fallbackWidth,
+      height: fallbackHeight,
+    };
+  };
+
+  const createImageFromSvg = (svg: string): Promise<HTMLImageElement> =>
+    new Promise((resolve, reject) => {
+      const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+      const blobUrl = URL.createObjectURL(blob);
+      const image = new Image();
+
+      image.onload = () => {
+        URL.revokeObjectURL(blobUrl);
+        resolve(image);
+      };
+
+      image.onerror = () => {
+        URL.revokeObjectURL(blobUrl);
+        reject(new Error('Falha ao carregar SVG para exportação PNG'));
+      };
+
+      image.src = blobUrl;
+    });
+
+  const exportSvgAsPng = async (svg: string, options: PngExportOptions) => {
+    const image = await createImageFromSvg(svg);
+    const scaleFactor = Math.min(Math.max(options.qualityScale, 1), 2);
+    const padding = Math.round(Math.min(options.width, options.height) * 0.04);
+    const drawableWidth = Math.max(options.width - padding * 2, 1);
+    const drawableHeight = Math.max(options.height - padding * 2, 1);
+
+    const source = getSvgSourceSize(
+      svg,
+      image.naturalWidth || options.width,
+      image.naturalHeight || options.height,
+    );
+    const fitScale = Math.min(drawableWidth / source.width, drawableHeight / source.height);
+    const drawWidth = source.width * fitScale;
+    const drawHeight = source.height * fitScale;
+    const drawX = (options.width - drawWidth) / 2;
+    const drawY = (options.height - drawHeight) / 2;
+
+    const hiResCanvas = document.createElement('canvas');
+    hiResCanvas.width = Math.round(options.width * scaleFactor);
+    hiResCanvas.height = Math.round(options.height * scaleFactor);
+    const hiResContext = hiResCanvas.getContext('2d');
+
+    if (!hiResContext) {
+      throw new Error('Não foi possível criar contexto de alta resolução para PNG');
+    }
+
+    hiResContext.scale(scaleFactor, scaleFactor);
+    hiResContext.fillStyle = '#ffffff';
+    hiResContext.fillRect(0, 0, options.width, options.height);
+    hiResContext.imageSmoothingEnabled = true;
+    hiResContext.imageSmoothingQuality = 'high';
+    hiResContext.drawImage(image, drawX, drawY, drawWidth, drawHeight);
+
+    const outputCanvas = document.createElement('canvas');
+    outputCanvas.width = options.width;
+    outputCanvas.height = options.height;
+    const outputContext = outputCanvas.getContext('2d');
+
+    if (!outputContext) {
+      throw new Error('Não foi possível criar contexto final para PNG');
+    }
+
+    outputContext.fillStyle = '#ffffff';
+    outputContext.fillRect(0, 0, options.width, options.height);
+    outputContext.imageSmoothingEnabled = true;
+    outputContext.imageSmoothingQuality = 'high';
+    outputContext.drawImage(
+      hiResCanvas,
+      0,
+      0,
+      hiResCanvas.width,
+      hiResCanvas.height,
+      0,
+      0,
+      options.width,
+      options.height,
+    );
+
+    const pngBlob = await new Promise<Blob>((resolve, reject) => {
+      outputCanvas.toBlob((blob) => {
+        if (blob) {
+          resolve(blob);
+          return;
+        }
+        reject(new Error('Falha ao gerar arquivo PNG'));
+      }, 'image/png');
+    });
+
+    downloadBlob(pngBlob, options.fileName);
+  };
+
   const dismissOnboarding = () => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(ONBOARDING_STORAGE_KEY, 'seen');
@@ -779,23 +1718,42 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
   };
 
   const handleExportSvg = async () => {
-    try {
-      const modeler = getActiveModeler();
-      const { svg } = await modeler.saveSVG();
-      downloadFile(svg, 'image/svg+xml', 'diagram.svg');
-    } catch (err: any) {
-      setErrors([`Erro ao exportar SVG: ${err.message}`]);
-    }
+    await runExportWithQualityGate(async () => {
+      try {
+        const modeler = getActiveModeler();
+        const { svg } = await modeler.saveSVG();
+        downloadFile(svg, 'image/svg+xml', 'diagram.svg');
+        setErrors([]);
+      } catch (err: any) {
+        setErrors([`Erro ao exportar SVG: ${err.message}`]);
+      }
+    });
   };
 
   const handleExportXml = async () => {
-    try {
-      const modeler = getActiveModeler();
-      const { xml } = await modeler.saveXML({ format: true });
-      downloadFile(xml, 'application/xml', 'diagram.bpmn');
-    } catch (err: any) {
-      setErrors([`Erro ao exportar XML: ${err.message}`]);
-    }
+    await runExportWithQualityGate(async () => {
+      try {
+        const modeler = getActiveModeler();
+        const { xml } = await modeler.saveXML({ format: true });
+        downloadFile(xml, 'application/xml', 'diagram.bpmn');
+        setErrors([]);
+      } catch (err: any) {
+        setErrors([`Erro ao exportar XML: ${err.message}`]);
+      }
+    });
+  };
+
+  const handleExportPng = async (options: PngExportOptions) => {
+    await runExportWithQualityGate(async () => {
+      try {
+        const modeler = getActiveModeler();
+        const { svg } = await modeler.saveSVG();
+        await exportSvgAsPng(svg, options);
+        setErrors([]);
+      } catch (err: any) {
+        setErrors([`Erro ao exportar PNG: ${err.message}`]);
+      }
+    });
   };
 
   const getCanvasApi = () => {
@@ -838,10 +1796,21 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
     }
   };
 
+  const handleToggleFocusMode = () => {
+    setFocusMode((current) => {
+      const next = !current;
+      if (next) {
+        setQualityDetailsOpen(false);
+        setFocusPropertiesOpen(false);
+      }
+      return next;
+    });
+  };
+
   return (
-    <div className="bpmn-editor-layout flex h-full min-h-0 min-w-0 gap-4">
+    <div className={`bpmn-editor-layout flex h-full min-h-0 min-w-0 gap-4 ${focusMode ? 'focus-mode' : ''}`}>
       <div className="bpmn-editor-main flex-1 flex flex-col min-h-0 min-w-0">
-        {showOnboarding && (
+        {showOnboarding && !focusMode && (
           <div className="message message-info mb-4">
             <p className="font-semibold mb-2">Primeiros passos</p>
             <ol className="list-decimal pl-5 text-sm space-y-1">
@@ -869,7 +1838,128 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
           </div>
         )}
 
-        <div className="bpmn-editor-actions flex gap-2 mb-4">
+        {qualityReport && (
+          <div
+            className={`message ${qualityReport.score >= qualityReport.threshold ? 'message-success' : 'message-info'} mb-3 quality-report-panel ${
+              focusMode && !qualityDetailsOpen ? 'quality-report-panel-focus' : ''
+            }`}
+          >
+            <div className="quality-report-header-row">
+              <p className="font-semibold">
+                Score de qualidade: {qualityReport.score}/100 (mínimo recomendado {qualityReport.threshold})
+              </p>
+              <button
+                type="button"
+                className="btn btn-ghost btn-small"
+                onClick={() => setQualityDetailsOpen((current) => !current)}
+                title={qualityDetailsOpen ? 'Ocultar painel de qualidade' : 'Abrir painel de qualidade'}
+              >
+                {qualityDetailsOpen ? 'Ocultar painel' : 'Abrir painel'}
+              </button>
+            </div>
+            {(qualityDetailsOpen || !focusMode) && (
+              <>
+                {qualityReport.score < qualityReport.threshold && (
+                  <p className="text-sm mt-1 quality-report-summary">
+                    Score abaixo do mínimo recomendado. Exportação está liberada nesta fase para priorizar ajustes de layout.
+                  </p>
+                )}
+                <p className="text-sm mt-1 quality-report-summary">
+                  Métricas: sobreposição de nós {qualityReport.metrics.shapeOverlaps}, colisão de labels {qualityReport.metrics.labelOverlaps},
+                  labels sobre nós {qualityReport.metrics.labelShapeOverlaps}, conexões atravessando nós {qualityReport.metrics.edgeShapeCrossings},
+                  cruzamentos de conexões {qualityReport.metrics.edgeEdgeCrossings}, lanes vazias {qualityReport.metrics.emptyLanes}.
+                </p>
+              </>
+            )}
+
+            {!qualityDetailsOpen && (
+              <p className="quality-report-findings-count mt-1">
+                {qualityReport.issues.length + qualityReport.warnings.length} apontamento(s) encontrado(s).
+                {focusMode ? ' Painel em modo compacto.' : ' Use “Abrir painel” para detalhes.'}
+              </p>
+            )}
+
+            {qualityDetailsOpen && (
+              <div className="quality-report-details">
+                {qualityReport.issues.length > 0 && (
+                  <ul className="list-disc pl-5 text-sm mt-2">
+                    {qualityReport.issues.map((issue) => (
+                      <li key={issue}>{issue}</li>
+                    ))}
+                  </ul>
+                )}
+
+                {qualityReport.warnings.length > 0 && (
+                  <ul className="list-disc pl-5 text-sm mt-2">
+                    {qualityReport.warnings.map((warning) => (
+                      <li key={warning}>{warning}</li>
+                    ))}
+                  </ul>
+                )}
+
+                {qualityReport.emptyLaneElementIds.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleCleanEmptyLanes}
+                      className="btn btn-secondary btn-small"
+                      title="Remover lanes vazias detectadas na análise"
+                    >
+                      Limpar lanes vazias
+                    </button>
+                    {laneCleanupUndoSteps > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleUndoLaneCleanup}
+                        className="btn btn-ghost btn-small"
+                        title="Desfazer limpeza de lanes"
+                      >
+                        Desfazer limpeza
+                      </button>
+                    )}
+                  </div>
+                )}
+                {qualityReport.issues.length === 0 && qualityReport.warnings.length === 0 && (
+                  <p className="text-sm mt-2">Nenhum problema detectado na análise atual.</p>
+                )}
+              </div>
+            )}
+            {!qualityDetailsOpen && qualityReport.emptyLaneElementIds.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handleCleanEmptyLanes}
+                  className="btn btn-secondary btn-small"
+                  title="Remover lanes vazias detectadas na análise"
+                >
+                  Limpar lanes vazias
+                </button>
+                {laneCleanupUndoSteps > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleUndoLaneCleanup}
+                    className="btn btn-ghost btn-small"
+                    title="Desfazer limpeza de lanes"
+                  >
+                    Desfazer limpeza
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="bpmn-editor-actions flex flex-wrap gap-2 mb-4">
+          <button
+            type="button"
+            onClick={handleToggleFocusMode}
+            title={focusMode ? 'Sair do modo foco do diagrama' : 'Expandir diagrama para foco em edição'}
+            aria-label={focusMode ? 'Sair do modo foco do diagrama' : 'Expandir diagrama para foco em edição'}
+            data-tooltip={focusMode ? 'Sair do foco 80%' : 'Modo foco 80%'}
+            className={`tooltip-trigger btn ${focusMode ? 'btn-primary' : 'btn-secondary'}`}
+          >
+            {focusMode ? 'Sair foco 80%' : 'Modo foco 80%'}
+          </button>
           <button
             type="button"
             onClick={handleFitViewport}
@@ -921,6 +2011,27 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
             Salvar
           </button>
           <button
+            type="button"
+            onClick={handleCheckQuality}
+            title="Executar análise de qualidade visual e semântica básica"
+            aria-label="Executar análise de qualidade visual e semântica básica"
+            data-tooltip="Executar análise de qualidade visual e semântica básica"
+            className="tooltip-trigger btn btn-secondary"
+          >
+            Verificar qualidade
+          </button>
+          <button
+            type="button"
+            onClick={handleAutoArrange}
+            disabled={readOnly}
+            title="Distribuir automaticamente os quadros por fluxo e por lane"
+            aria-label="Distribuir automaticamente os quadros por fluxo e por lane"
+            data-tooltip="Distribuir automaticamente os quadros por fluxo e por lane"
+            className="tooltip-trigger btn btn-secondary"
+          >
+            Organizar automático
+          </button>
+          <button
             onClick={handleExportXml}
             title="Exportar BPMN em XML"
             aria-label="Exportar BPMN em XML"
@@ -938,15 +2049,60 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
           >
             Exportar SVG
           </button>
+          <button
+            onClick={() => handleExportPng({
+              width: 1920,
+              height: 1080,
+              qualityScale: 2,
+              fileName: 'diagram-1920x1080.png',
+            })}
+            title="Exportar PNG em 1920x1080 com alta qualidade"
+            aria-label="Exportar PNG em 1920x1080 com alta qualidade"
+            data-tooltip="Exportar PNG em 1920x1080 com alta qualidade"
+            className="tooltip-trigger btn btn-secondary"
+          >
+            PNG 1920x1080
+          </button>
+          <button
+            onClick={() => handleExportPng({
+              width: 3840,
+              height: 2160,
+              qualityScale: 1,
+              fileName: 'diagram-3840x2160.png',
+            })}
+            title="Exportar PNG em 3840x2160 (4K)"
+            aria-label="Exportar PNG em 3840x2160 (4K)"
+            data-tooltip="Exportar PNG em 3840x2160 (4K)"
+            className="tooltip-trigger btn btn-ghost"
+          >
+            PNG 4K
+          </button>
         </div>
+
+        {selectedElement && focusMode && (
+          <details
+            className="properties-dropdown mb-3"
+            open={focusPropertiesOpen}
+            onToggle={(event) => setFocusPropertiesOpen((event.currentTarget as HTMLDetailsElement).open)}
+          >
+            <summary>Propriedades do elemento</summary>
+            <div className="properties-dropdown-content">
+              <BpmnPropertiesPanel
+                element={selectedElement}
+                modeler={modelerRef.current}
+                onUpdate={() => setSelectedElement(null)}
+              />
+            </div>
+          </details>
+        )}
 
         <div
           ref={containerRef}
-          className="bpmn-container flex-1 min-h-0 min-w-0 w-full h-full overflow-hidden border border-gray-300 rounded bg-white"
+          className={`bpmn-container flex-1 min-h-0 min-w-0 w-full h-full overflow-hidden border border-gray-300 rounded bg-white ${focusMode ? 'bpmn-container-focus' : ''}`}
         />
       </div>
 
-      {selectedElement && (
+      {selectedElement && !focusMode && (
         <aside className="properties-panel-shell">
           <BpmnPropertiesPanel
             element={selectedElement}
