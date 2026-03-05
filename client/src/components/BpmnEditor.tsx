@@ -34,8 +34,8 @@ const ZOOM_STEP = 0.15;
 const QUALITY_THRESHOLD = 80;
 const AUTO_LAYOUT_MIN_COLUMN_GAP = 170;
 const AUTO_LAYOUT_MAX_COLUMN_GAP = 250;
-const AUTO_LAYOUT_ROW_GAP = 110;
-const AUTO_LAYOUT_LANE_VERTICAL_PADDING = 42;
+const AUTO_LAYOUT_ROW_GAP = 130;
+const AUTO_LAYOUT_LANE_VERTICAL_PADDING = 50;
 
 interface BoundsBox {
   left: number;
@@ -541,15 +541,9 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
       laneRect.setAttribute('stroke-width', '1.25');
       laneRect.setAttribute('fill-opacity', '1');
       gfx?.classList.add('lane-striped');
-
-      const laneLabelText =
-        gfx?.querySelector<SVGTextElement>('.djs-label text') ||
-        gfx?.querySelector<SVGTextElement>('text');
-      if (laneLabelText) {
-        laneLabelText.setAttribute('font-size', '11');
-        laneLabelText.setAttribute('font-weight', '600');
-        laneLabelText.setAttribute('letter-spacing', '0.01em');
-      }
+      // Lane label styling is handled purely via CSS (`.lane-striped` class)
+      // Do NOT manipulate text nodes here — bpmn-js re-renders them on
+      // zoom/import/resize and any DOM patches get lost or cause overlap.
     });
   }, []);
 
@@ -650,7 +644,18 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
         is(element.businessObject, 'bpmn:SequenceFlow'),
     );
 
-    sequenceConnections.forEach((connection: any) => {
+    // Sort connections: short/same-lane first, long/cross-lane last.
+    // This gives the bpmn-js layouter better results since shorter paths
+    // are laid out first and won't be displaced by longer ones.
+    const sorted = [...sequenceConnections].sort((a: any, b: any) => {
+      const aDist = Math.abs((a.target?.x ?? 0) - (a.source?.x ?? 0)) +
+                    Math.abs((a.target?.y ?? 0) - (a.source?.y ?? 0));
+      const bDist = Math.abs((b.target?.x ?? 0) - (b.source?.x ?? 0)) +
+                    Math.abs((b.target?.y ?? 0) - (b.source?.y ?? 0));
+      return aDist - bDist;
+    });
+
+    sorted.forEach((connection: any) => {
       try {
         const waypoints = layouter.layoutConnection(connection, {
           connectionStart: connection.source,
@@ -672,6 +677,23 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
 
     try {
       await modeler.importXML(xml);
+
+      // Clear participant (pool) label — the pool header should be empty;
+      // the process name lives in <bpmn:process name="...">
+      const elementRegistry = modeler.get('elementRegistry') as {
+        filter: (matcher: (element: any) => boolean) => any[];
+      };
+      const modeling = modeler.get('modeling') as {
+        updateProperties: (element: any, properties: Record<string, any>) => void;
+      };
+      elementRegistry
+        .filter((el: any) => el?.businessObject && is(el.businessObject, 'bpmn:Participant'))
+        .forEach((el: any) => {
+          if (el.businessObject.name) {
+            modeling.updateProperties(el, { name: '' });
+          }
+        });
+
       const isAiDraftExporter = xml.includes('exporter="tottal-bpm-ai"');
       const hasDiagramEdges = xml.includes('<bpmndi:BPMNEdge');
       if (isAiDraftExporter && !hasDiagramEdges) {
@@ -1129,7 +1151,7 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
         const contentTop = Math.min(...laneChildren.map((child: any) => child.y));
         const contentBottom = Math.max(...laneChildren.map((child: any) => child.y + child.height));
         const contentHeight = Math.max(0, contentBottom - contentTop);
-        const requiredHeight = Math.max(minLaneHeight, Math.min(participantHeight, Math.round(contentHeight + 72)));
+        const requiredHeight = Math.max(minLaneHeight, Math.min(participantHeight, Math.round(contentHeight + 100)));
 
         return {
           lane,
@@ -1288,12 +1310,18 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
       const modeling = modeler.get('modeling') as {
         moveShape: (shape: any, delta: { x: number; y: number }, newParent?: any) => void;
         resizeShape: (shape: any, bounds: { x: number; y: number; width: number; height: number }) => void;
+        updateProperties: (element: any, properties: Record<string, any>) => void;
       };
       const canvas = modeler.get('canvas') as {
         zoom: (value?: number | 'fit-viewport', center?: 'auto') => number | void;
       };
 
       const allElements = elementRegistry.filter(() => true);
+
+      // Clear participant label if present (semantic fix for existing diagrams)
+      allElements
+        .filter((el) => el?.businessObject && is(el.businessObject, 'bpmn:Participant') && el.businessObject.name)
+        .forEach((el) => modeling.updateProperties(el, { name: '' }));
 
       const participant = allElements.find(
         (element) =>
@@ -1470,30 +1498,76 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
         columnGap = clamp(recalcGap, AUTO_LAYOUT_MIN_COLUMN_GAP, AUTO_LAYOUT_MAX_COLUMN_GAP);
       }
 
-      const laneNodeGroups = new Map<string, any[]>();
-      flowNodes.forEach((node) => {
-        const lane = laneByNodeId.get(node.id);
-        const laneKey = lane?.id || '__default_lane__';
-        const list = laneNodeGroups.get(laneKey) || [];
-        list.push(node);
-        laneNodeGroups.set(laneKey, list);
-      });
-
+      // --- Group nodes by (laneId + rank) for proper vertical distribution ---
+      const laneRankGroups = new Map<string, any[]>();
       const fallbackLane = lanes[0] || null;
+
       flowNodes.forEach((node) => {
         const lane = laneByNodeId.get(node.id) || fallbackLane;
-        const laneNodes = (laneNodeGroups.get(lane?.id || '__default_lane__') || [])
+        const laneKey = lane?.id || '__default__';
+        const rank = rankByNodeId.get(node.id) || 0;
+        const groupKey = `${laneKey}__${rank}`;
+        const list = laneRankGroups.get(groupKey) || [];
+        list.push(node);
+        laneRankGroups.set(groupKey, list);
+      });
+
+      // Calculate max rows per lane (to know minimum lane height needed)
+      const laneMaxRows = new Map<string, number>();
+      laneRankGroups.forEach((nodes, groupKey) => {
+        const laneKey = groupKey.split('__')[0];
+        const current = laneMaxRows.get(laneKey) || 0;
+        laneMaxRows.set(laneKey, Math.max(current, nodes.length));
+      });
+
+      // Pre-expand participant height if content won't fit
+      if (participant) {
+        const defaultNodeHeight = 80;
+        const rowGapInner = 30;
+        let totalMinHeight = 0;
+        (lanes.length > 0 ? lanes : [null]).forEach((lane) => {
+          const laneKey = lane?.id || '__default__';
+          const maxRows = laneMaxRows.get(laneKey) || 1;
+          totalMinHeight +=
+            AUTO_LAYOUT_LANE_VERTICAL_PADDING * 2 +
+            maxRows * defaultNodeHeight +
+            Math.max(0, maxRows - 1) * rowGapInner;
+        });
+        if (totalMinHeight > participant.height) {
+          modeling.resizeShape(participant, {
+            x: participant.x,
+            y: participant.y,
+            width: participant.width,
+            height: totalMinHeight + 60,
+          });
+          lanes = lanes.map((lane) => elementRegistry.get(lane.id)).filter(Boolean);
+        }
+      }
+
+      // Position each node: vertically centered within its lane at its rank column
+      flowNodes.forEach((node) => {
+        const lane = laneByNodeId.get(node.id) || fallbackLane;
+        const laneKey = lane?.id || '__default__';
+        const rank = rankByNodeId.get(node.id) || 0;
+        const groupKey = `${laneKey}__${rank}`;
+        const sameRankNodes = (laneRankGroups.get(groupKey) || [node])
           .sort((a, b) =>
-            (rankByNodeId.get(a.id) || 0) - (rankByNodeId.get(b.id) || 0) ||
             (a.y ?? 0) - (b.y ?? 0) ||
             (originalOrder.get(a.id) || 0) - (originalOrder.get(b.id) || 0));
 
-        const laneIndex = laneNodes.findIndex((candidate) => candidate.id === node.id);
+        const rowIndex = sameRankNodes.findIndex((n) => n.id === node.id);
         const laneTop = lane ? lane.y : (Math.min(...flowNodes.map((n) => n.y || 0)) - 20);
-        const rank = rankByNodeId.get(node.id) || 0;
+        const laneHeight = lane ? lane.height : 400;
+        const nodeHeight = node.height || 80;
+        const totalRows = sameRankNodes.length;
+        const requiredSpace = totalRows * nodeHeight + Math.max(0, totalRows - 1) * 30;
+        const startY = laneTop + Math.max(
+          AUTO_LAYOUT_LANE_VERTICAL_PADDING,
+          (laneHeight - requiredSpace) / 2,
+        );
 
         const targetX = horizontal.left + (rank * columnGap);
-        const targetY = laneTop + AUTO_LAYOUT_LANE_VERTICAL_PADDING + (Math.max(laneIndex, 0) * AUTO_LAYOUT_ROW_GAP);
+        const targetY = startY + rowIndex * (nodeHeight + 30);
         const delta = {
           x: targetX - node.x,
           y: targetY - node.y,
@@ -1504,8 +1578,59 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
         }
       });
 
+      // Redistribute lane heights based on actual content
       if (participant) {
         redistributeParticipantLanes([participant.id]);
+      }
+
+      // Post-redistribution: validate ALL nodes are within their lane/pool bounds
+      if (participant) {
+        // Re-fetch participant and lanes after redistribution (bounds have changed)
+        const freshParticipant = elementRegistry.get(participant.id);
+        const updatedLanes = elementRegistry
+          .filter((el: any) => el?.businessObject && is(el.businessObject, 'bpmn:Lane'))
+          .sort((a: any, b: any) => (a.y ?? 0) - (b.y ?? 0));
+
+        const poolTop = freshParticipant?.y ?? participant.y;
+        const poolBottom = poolTop + (freshParticipant?.height ?? participant.height);
+
+        flowNodes.forEach((node) => {
+          const freshNode = elementRegistry.get(node.id);
+          if (!freshNode) return;
+
+          const nodeCenter = freshNode.y + (freshNode.height || 0) / 2;
+          const nodeBottom = freshNode.y + (freshNode.height || 0);
+
+          // Find the assigned lane, or fall back to closest by position
+          const assignedLane = laneByNodeId.get(node.id);
+          let targetLane = assignedLane
+            ? updatedLanes.find((l: any) => l.id === assignedLane.id)
+            : null;
+
+          // Fallback: find lane that contains this node's center
+          if (!targetLane && updatedLanes.length > 0) {
+            targetLane = updatedLanes.find((l: any) =>
+              nodeCenter >= l.y && nodeCenter <= l.y + l.height,
+            );
+          }
+
+          // Last resort: if node is outside pool entirely, assign to last lane
+          if (!targetLane && updatedLanes.length > 0) {
+            targetLane = nodeCenter > poolBottom
+              ? updatedLanes[updatedLanes.length - 1]
+              : updatedLanes[0];
+          }
+          if (!targetLane) return;
+
+          const laneCenter = targetLane.y + targetLane.height / 2;
+          const isOutsideLane = nodeCenter < targetLane.y || nodeCenter > targetLane.y + targetLane.height;
+          const isOutsidePool = nodeBottom > poolBottom || freshNode.y < poolTop;
+
+          if (isOutsideLane || isOutsidePool) {
+            const newY = laneCenter - (freshNode.height || 0) / 2;
+            modeling.moveShape(freshNode, { x: 0, y: newY - freshNode.y }, targetLane);
+          }
+        });
       }
 
       rerouteAiDraftConnections();
