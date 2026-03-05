@@ -456,9 +456,18 @@ export class AiService {
       throw new BadRequestException('Schema inválido: nó start deve ter ao menos um fluxo de saída');
     }
 
+    if ((incomingCount.get(startNodes[0].id) || 0) > 0) {
+      throw new BadRequestException('Schema inválido: nó start não pode receber fluxo de entrada');
+    }
+
     const hasEndWithIncoming = endNodes.some((node) => (incomingCount.get(node.id) || 0) > 0);
     if (!hasEndWithIncoming) {
       throw new BadRequestException('Schema inválido: nó end deve receber ao menos um fluxo');
+    }
+
+    const endWithOutgoing = endNodes.find((node) => (outgoingCount.get(node.id) || 0) > 0);
+    if (endWithOutgoing) {
+      throw new BadRequestException(`Schema inválido: nó end não pode ter fluxo de saída (${endWithOutgoing.id})`);
     }
 
     return {
@@ -538,11 +547,10 @@ export class AiService {
     const laneHeight = 180;
     const participantX = 80;
     const participantY = 80;
-    const laneHeaderWidth = 48;
+    const laneHeaderWidth = 64;
     const baseX = participantX + laneHeaderWidth + 70;
     const orderedNodeIds = this.getMainFlowOrder(graph.nodes, graph.flows);
-    const rowCount = orderedNodeIds.length > 10 ? 3 : orderedNodeIds.length > 5 ? 2 : 1;
-    const columnsPerRow = Math.ceil(orderedNodeIds.length / rowCount);
+    const columnsPerRow = Math.max(orderedNodeIds.length, 1);
     const horizontalGap = 240;
 
     orderedNodeIds.forEach((nodeId, index) => {
@@ -749,7 +757,7 @@ export class AiService {
       flowElements,
       '  </bpmn:process>',
       `  <bpmn:collaboration id="${collaborationId}">`,
-      `    <bpmn:participant id="${participantId}" processRef="${processId}" />`,
+      `    <bpmn:participant id="${participantId}" name="" processRef="${processId}" />`,
       '  </bpmn:collaboration>',
       `  <bpmndi:BPMNDiagram id="${diagramId}">`,
       `    <bpmndi:BPMNPlane id="${planeId}" bpmnElement="${collaborationId}">`,
@@ -804,7 +812,8 @@ export class AiService {
     const laneDistance = Math.abs(source.laneIndex - target.laneIndex);
     const rowDistance = Math.abs(source.row - target.row);
     const sourceTrackOffset = this.getSlotOffset(routing.sourceSlot, routing.sourceCount, 18);
-    const flowTrackOffset = this.getSlotOffset(routing.flowIndex % 5, 5, 12);
+    const pairKey = (source.column * 7 + source.laneIndex * 3 + target.column + target.laneIndex) % 7;
+    const flowTrackOffset = this.getSlotOffset(pairKey, 7, 12);
     const corridorBase = toRight
       ? sourceEscapeX + 46 + sourceTrackOffset
       : sourceEscapeX - 46 - sourceTrackOffset;
@@ -1025,8 +1034,112 @@ export class AiService {
       })),
       flows: [...schema.flows],
     };
-    const pdcaGraph = this.applyPdcaSubprocess(initialGraph);
-    return this.assignOperationalMetadata(pdcaGraph);
+    const graphWithNormalizedBranches = this.normalizeConditionalBranches(initialGraph);
+    const pdcaGraph = this.applyPdcaSubprocess(graphWithNormalizedBranches);
+    const graphWithClosedPaths = this.ensureTerminalEndEvents(pdcaGraph);
+    return this.assignOperationalMetadata(graphWithClosedPaths);
+  }
+
+  private normalizeConditionalBranches(graph: RenderGraph): RenderGraph {
+    const nodes = graph.nodes.map((node) => ({ ...node }));
+    const flows = graph.flows.map((flow) => ({ ...flow }));
+    const nodeById = new Map(nodes.map((node) => [node.id, node]));
+    const usedFlowIds = new Set(flows.map((flow) => flow.id));
+    const outgoingByNode = new Map<string, DraftBpmnFlow[]>();
+
+    flows.forEach((flow) => {
+      const outgoing = outgoingByNode.get(flow.source) || [];
+      outgoing.push(flow);
+      outgoingByNode.set(flow.source, outgoing);
+    });
+
+    for (const [sourceId, outgoing] of outgoingByNode.entries()) {
+      const sourceNode = nodeById.get(sourceId);
+      if (!sourceNode || sourceNode.type === 'gateway_exclusive' || sourceNode.type === 'end') {
+        continue;
+      }
+
+      if (outgoing.length < 2) {
+        continue;
+      }
+
+      const hasConditionalBranch = outgoing.some((flow) => this.isConditionalFlowLabel(flow.label));
+      if (!hasConditionalBranch) {
+        continue;
+      }
+
+      const gatewayId = this.createUniqueNodeId(`${sourceId}_gateway`, nodes);
+      const gatewayNode: RenderNode = {
+        id: gatewayId,
+        type: 'gateway_exclusive',
+        label: 'Decisão',
+      };
+      nodes.push(gatewayNode);
+      nodeById.set(gatewayId, gatewayNode);
+
+      outgoing.forEach((flow) => {
+        flow.source = gatewayId;
+      });
+
+      flows.push({
+        id: this.createUniqueFlowId(`${sourceId}_to_gateway`, usedFlowIds),
+        source: sourceId,
+        target: gatewayId,
+      });
+    }
+
+    return {
+      processName: graph.processName,
+      nodes,
+      flows,
+    };
+  }
+
+  private ensureTerminalEndEvents(graph: RenderGraph): RenderGraph {
+    const nodes = graph.nodes.map((node) => ({ ...node }));
+    const flows = graph.flows.map((flow) => ({ ...flow }));
+    const usedFlowIds = new Set(flows.map((flow) => flow.id));
+    const outgoingByNode = new Map<string, DraftBpmnFlow[]>();
+
+    flows.forEach((flow) => {
+      const outgoing = outgoingByNode.get(flow.source) || [];
+      outgoing.push(flow);
+      outgoingByNode.set(flow.source, outgoing);
+    });
+
+    [...nodes].forEach((node) => {
+      if (node.type === 'end') {
+        return;
+      }
+
+      const outgoing = outgoingByNode.get(node.id) || [];
+      if (outgoing.length > 0) {
+        return;
+      }
+
+      const endNodeId = this.createUniqueNodeId(`${node.id}_end`, nodes);
+      const endNode: RenderNode = {
+        id: endNodeId,
+        type: 'end',
+        label: 'Fim',
+      };
+      nodes.push(endNode);
+
+      const closingFlow: DraftBpmnFlow = {
+        id: this.createUniqueFlowId(`${node.id}_to_end`, usedFlowIds),
+        source: node.id,
+        target: endNodeId,
+      };
+
+      flows.push(closingFlow);
+      outgoingByNode.set(node.id, [closingFlow]);
+    });
+
+    return {
+      processName: graph.processName,
+      nodes,
+      flows,
+    };
   }
 
   private applyPdcaSubprocess(graph: RenderGraph): RenderGraph {
@@ -1266,8 +1379,22 @@ export class AiService {
       .toLowerCase();
   }
 
+  private isConditionalFlowLabel(label?: string): boolean {
+    if (!label || !label.trim()) {
+      return false;
+    }
+
+    const normalized = this.normalizeLabel(label).replace(/\s+/g, '');
+    if (/^(sim|nao|yes|no|true|false|ok|erro|aprovado|reprovado)$/.test(normalized)) {
+      return true;
+    }
+
+    return /==|!=|>=|<=|>|<|entao|então|sen[aã]o/.test(normalized);
+  }
+
   private getMainFlowOrder(nodes: Array<{ id: string; type: string }>, flows: DraftBpmnFlow[]): string[] {
     const outgoingByNode = new Map<string, DraftBpmnFlow[]>();
+    const nodeTypeById = new Map(nodes.map((node) => [node.id, node.type]));
     flows.forEach((flow) => {
       const list = outgoingByNode.get(flow.source) || [];
       list.push(flow);
@@ -1292,19 +1419,34 @@ export class AiService {
 
       const outgoing = (outgoingByNode.get(nodeId) || [])
         .slice()
-        .sort((a, b) => a.id.localeCompare(b.id));
+        .sort((a, b) => {
+          const aTargetType = nodeTypeById.get(a.target);
+          const bTargetType = nodeTypeById.get(b.target);
+
+          if (aTargetType === 'end' && bTargetType !== 'end') return 1;
+          if (aTargetType !== 'end' && bTargetType === 'end') return -1;
+          return a.id.localeCompare(b.id);
+        });
 
       outgoing.forEach((flow) => visit(flow.target));
     };
 
     visit(startNode.id);
 
-    nodes
-      .filter((node) => !visited.has(node.id))
-      .sort((a, b) => a.id.localeCompare(b.id))
-      .forEach((node) => order.push(node.id));
+    const visitedNonEnd = order.filter((nodeId) => nodeTypeById.get(nodeId) !== 'end');
+    const visitedEnd = order.filter((nodeId) => nodeTypeById.get(nodeId) === 'end');
 
-    return order;
+    const remainingNodes = nodes
+      .filter((node) => !visited.has(node.id))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const remainingNonEnd = remainingNodes
+      .filter((node) => node.type !== 'end')
+      .map((node) => node.id);
+    const remainingEnd = remainingNodes
+      .filter((node) => node.type === 'end')
+      .map((node) => node.id);
+
+    return [...visitedNonEnd, ...remainingNonEnd, ...visitedEnd, ...remainingEnd];
   }
 
   private escapeXml(value: string): string {

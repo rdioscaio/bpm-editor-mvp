@@ -800,12 +800,18 @@ body {
   stroke-width: 2.4px;
 }
 
-.lane-striped .djs-label text {
+/* Lane label styling — CSS only, no DOM manipulation */
+.lane-striped .djs-label text,
+.lane-striped > .djs-visual > text {
+  font-size: 11px;
   font-weight: 600;
+  letter-spacing: 0.01em;
 }
 
-.djs-element[data-element-id^='Participant_'] .djs-label text {
-  display: none;
+/* Hide participant (pool) label — covers any ID prefix */
+.djs-element[data-element-id^='Participant_'] .djs-label text,
+.djs-element[data-element-id^='Participant_'] > .djs-visual > text {
+  display: none !important;
 }
 
 .djs-label,
