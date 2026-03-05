@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import BpmnModeler from 'bpmn-js/lib/Modeler';
 import { is } from 'bpmn-js/lib/util/ModelUtil';
+import ELK from 'elkjs/lib/elk.bundled.js';
 import 'bpmn-js/dist/assets/diagram-js.css';
 import 'bpmn-js/dist/assets/bpmn-js.css';
 import 'bpmn-js/dist/assets/bpmn-font/css/bpmn.css';
@@ -663,7 +664,23 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
         });
 
         if (Array.isArray(waypoints) && waypoints.length >= 2) {
-          modeling.updateWaypoints(connection, waypoints);
+          // Force orthogonal routing: if any segment is diagonal (neither
+          // horizontal nor vertical), convert it to an L-shaped path by
+          // inserting a midpoint so every segment is axis-aligned.
+          const ortho: Array<{ x: number; y: number }> = [waypoints[0]];
+          for (let i = 1; i < waypoints.length; i++) {
+            const prev = ortho[ortho.length - 1];
+            const curr = waypoints[i];
+            const dx = Math.abs(curr.x - prev.x);
+            const dy = Math.abs(curr.y - prev.y);
+            // A segment is "diagonal" when it has meaningful movement on both axes
+            if (dx > 1 && dy > 1) {
+              // Insert an L-shaped bend: go horizontal first, then vertical
+              ortho.push({ x: curr.x, y: prev.y });
+            }
+            ortho.push(curr);
+          }
+          modeling.updateWaypoints(connection, ortho);
         }
       } catch (error) {
         console.warn('Falha ao recalcular rota de fluxo:', error);
@@ -1437,6 +1454,89 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
         rankByNodeId.set(node.id, Math.max(rankByNodeId.get(node.id) || 0, fallbackRank));
       });
 
+      // --- De-stacking pass: spread nodes that share the same (lane, rank) ---
+      // When more than 2 nodes land in the same lane at the same rank they
+      // would stack vertically.  Keep the first 2 and push excess nodes to
+      // the next rank, shifting all downstream nodes so ordering is preserved.
+      {
+        // Build a temporary lane lookup (parent-based) so we can group before
+        // the full laneByNodeId map is constructed below.
+        const tempLane = (node: any): string => {
+          if (node.parent?.businessObject && is(node.parent.businessObject, 'bpmn:Lane')) {
+            return node.parent.id;
+          }
+          if (lanes.length > 0) {
+            const centerY = (node.y || 0) + ((node.height || 0) / 2);
+            const containing = lanes.find(
+              (lane) => centerY >= lane.y && centerY <= lane.y + lane.height,
+            );
+            return containing?.id || lanes[0]?.id || '__default__';
+          }
+          return '__default__';
+        };
+
+        // Group node-ids by (lane, rank)
+        const lrGroups = new Map<string, string[]>();
+        flowNodes.forEach((node) => {
+          const key = `${tempLane(node)}__${rankByNodeId.get(node.id) || 0}`;
+          const list = lrGroups.get(key) || [];
+          list.push(node.id);
+          lrGroups.set(key, list);
+        });
+
+        // For every group that exceeds 2 nodes, push excess to rank+1.
+        // We may need to iterate because pushing nodes can create new
+        // over-crowded groups — but a single pass is usually sufficient.
+        const MAX_PER_RANK = 2;
+        let changed = true;
+        let safety = 0;
+        while (changed && safety < 20) {
+          changed = false;
+          safety++;
+
+          // Rebuild groups each iteration
+          lrGroups.clear();
+          flowNodes.forEach((node) => {
+            const key = `${tempLane(node)}__${rankByNodeId.get(node.id) || 0}`;
+            const list = lrGroups.get(key) || [];
+            list.push(node.id);
+            lrGroups.set(key, list);
+          });
+
+          lrGroups.forEach((ids, groupKey) => {
+            if (ids.length <= MAX_PER_RANK) return;
+
+            // Sort by original order so first-encountered nodes stay put
+            ids.sort(
+              (a, b) => (originalOrder.get(a) || 0) - (originalOrder.get(b) || 0),
+            );
+
+            const currentRank = rankByNodeId.get(ids[0]) || 0;
+            const excess = ids.slice(MAX_PER_RANK);
+
+            excess.forEach((id) => {
+              const newRank = currentRank + 1;
+              rankByNodeId.set(id, newRank);
+
+              // Shift all direct downstream nodes so they stay ahead
+              const shiftDownstream = (sourceId: string, minRank: number) => {
+                const targets = outgoingByNode.get(sourceId) || [];
+                targets.forEach((tid) => {
+                  const tRank = rankByNodeId.get(tid) || 0;
+                  if (tRank <= minRank) {
+                    rankByNodeId.set(tid, minRank + 1);
+                    shiftDownstream(tid, minRank + 1);
+                  }
+                });
+              };
+              shiftDownstream(id, newRank);
+
+              changed = true;
+            });
+          });
+        }
+      }
+
       const laneByNodeId = new Map<string, any>();
       const resolveLaneForNode = (node: any) => {
         if (node.parent?.businessObject && is(node.parent.businessObject, 'bpmn:Lane')) {
@@ -1645,6 +1745,340 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
       setErrors([`Erro ao organizar diagrama automaticamente: ${err.message}`]);
     }
   }, [calculateQualityReport, redistributeParticipantLanes, rerouteAiDraftConnections, scheduleVisualRefresh]);
+
+  const handleElkAutoArrange = useCallback(async () => {
+    try {
+      const modeler = getActiveModeler();
+      const elementRegistry = modeler.get('elementRegistry') as {
+        filter: (matcher: (element: any) => boolean) => any[];
+        get: (id: string) => any;
+      };
+      const modeling = modeler.get('modeling') as {
+        moveShape: (shape: any, delta: { x: number; y: number }, newParent?: any) => void;
+        resizeShape: (shape: any, bounds: { x: number; y: number; width: number; height: number }) => void;
+        updateProperties: (element: any, properties: Record<string, any>) => void;
+        updateWaypoints: (connection: any, waypoints: Array<{ x: number; y: number }>) => void;
+      };
+      const canvas = modeler.get('canvas') as {
+        zoom: (value?: number | 'fit-viewport', center?: 'auto') => number | void;
+      };
+      const layouter = modeler.get('layouter') as {
+        layoutConnection: (connection: any, hints?: Record<string, any>) => Array<{ x: number; y: number }>;
+      };
+
+      const allElements = elementRegistry.filter(() => true);
+
+      // Clear participant label if present
+      allElements
+        .filter((el) => el?.businessObject && is(el.businessObject, 'bpmn:Participant') && el.businessObject.name)
+        .forEach((el) => modeling.updateProperties(el, { name: '' }));
+
+      const participant = allElements.find(
+        (element) =>
+          element?.businessObject &&
+          !element?.waypoints &&
+          element.type !== 'label' &&
+          is(element.businessObject, 'bpmn:Participant'),
+      );
+
+      const lanes = allElements
+        .filter(
+          (element) =>
+            element?.businessObject &&
+            !element?.waypoints &&
+            element.type !== 'label' &&
+            is(element.businessObject, 'bpmn:Lane'),
+        )
+        .sort((a, b) => (a.y ?? 0) - (b.y ?? 0));
+
+      const flowNodes = allElements.filter((element) => {
+        if (!element?.businessObject || element?.waypoints || element.type === 'label') return false;
+        if (is(element.businessObject, 'bpmn:Participant') || is(element.businessObject, 'bpmn:Lane')) return false;
+        return (
+          is(element.businessObject, 'bpmn:StartEvent') ||
+          is(element.businessObject, 'bpmn:EndEvent') ||
+          is(element.businessObject, 'bpmn:Task') ||
+          is(element.businessObject, 'bpmn:SubProcess') ||
+          is(element.businessObject, 'bpmn:CallActivity') ||
+          is(element.businessObject, 'bpmn:Gateway')
+        );
+      });
+
+      if (flowNodes.length < 2) {
+        setErrors(['Layout automático: adicione mais elementos de processo para organizar.']);
+        return;
+      }
+
+      const nodeIds = new Set(flowNodes.map((node) => node.id));
+
+      const sequenceConnections = allElements.filter(
+        (element) =>
+          element?.waypoints &&
+          element?.businessObject &&
+          is(element.businessObject, 'bpmn:SequenceFlow'),
+      );
+
+      // --- Resolve lane for each flow node ---
+      const resolveLaneForNode = (node: any) => {
+        if (node.parent?.businessObject && is(node.parent.businessObject, 'bpmn:Lane')) {
+          return node.parent;
+        }
+        if (lanes.length === 0) return null;
+        const centerY = (node.y || 0) + ((node.height || 0) / 2);
+        const containingLane = lanes.find((lane) => centerY >= lane.y && centerY <= lane.y + lane.height);
+        return containingLane || lanes[0];
+      };
+
+      const laneByNodeId = new Map<string, any>();
+      flowNodes.forEach((node) => {
+        laneByNodeId.set(node.id, resolveLaneForNode(node));
+      });
+
+      // --- Build ELK graph ---
+      const elk = new ELK();
+
+      // Build lane group children: each lane is a group node containing its flow nodes
+      const laneChildren: any[] = [];
+      const laneNodeMap = new Map<string, any[]>(); // laneId -> elk child nodes
+
+      // Group flow nodes by lane
+      const nodesPerLane = new Map<string, any[]>();
+      flowNodes.forEach((node) => {
+        const lane = laneByNodeId.get(node.id);
+        const laneKey = lane?.id || '__default__';
+        const list = nodesPerLane.get(laneKey) || [];
+        list.push(node);
+        nodesPerLane.set(laneKey, list);
+      });
+
+      // Build ELK children for each lane
+      if (lanes.length > 0) {
+        lanes.forEach((lane) => {
+          const laneFlowNodes = nodesPerLane.get(lane.id) || [];
+          const elkLaneChildren = laneFlowNodes.map((node) => ({
+            id: node.id,
+            width: node.width || 120,
+            height: node.height || 80,
+          }));
+          laneNodeMap.set(lane.id, elkLaneChildren);
+
+          laneChildren.push({
+            id: lane.id,
+            layoutOptions: {
+              'elk.padding': '[top=50,left=30,bottom=30,right=30]',
+            },
+            children: elkLaneChildren,
+            edges: [],
+          });
+        });
+
+        // Nodes not in any known lane go into a default group
+        const defaultNodes = nodesPerLane.get('__default__') || [];
+        if (defaultNodes.length > 0) {
+          const elkDefaultChildren = defaultNodes.map((node) => ({
+            id: node.id,
+            width: node.width || 120,
+            height: node.height || 80,
+          }));
+          laneChildren.push({
+            id: '__default_lane__',
+            children: elkDefaultChildren,
+            edges: [],
+          });
+        }
+      } else {
+        // No lanes: all flow nodes are direct children of root
+        flowNodes.forEach((node) => {
+          laneChildren.push({
+            id: node.id,
+            width: node.width || 120,
+            height: node.height || 80,
+          });
+        });
+      }
+
+      // Build ELK edges from sequence connections
+      const elkEdges = sequenceConnections
+        .filter((conn) => {
+          const sourceId = conn.source?.id;
+          const targetId = conn.target?.id;
+          return sourceId && targetId && nodeIds.has(sourceId) && nodeIds.has(targetId);
+        })
+        .map((conn) => ({
+          id: conn.id,
+          sources: [conn.source.id],
+          targets: [conn.target.id],
+        }));
+
+      // Root graph: participant or virtual root
+      const rootId = participant?.id || '__elk_root__';
+      const elkGraph: any = {
+        id: rootId,
+        layoutOptions: {
+          'elk.algorithm': 'layered',
+          'elk.direction': 'RIGHT',
+          'elk.layered.spacing.nodeNodeBetweenLayers': '200',
+          'elk.layered.spacing.edgeNodeBetweenLayers': '40',
+          'elk.spacing.nodeNode': '40',
+          'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
+          'elk.edgeRouting': 'ORTHOGONAL',
+          'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+        },
+        children: laneChildren,
+        edges: elkEdges,
+      };
+
+      // --- Run ELK layout ---
+      const layoutResult = await elk.layout(elkGraph);
+
+      // --- Map ELK positions back to bpmn-js elements ---
+      // Determine base offset (participant or first lane position)
+      const baseX = participant ? participant.x + 30 : (lanes.length > 0 ? lanes[0].x + 30 : 100);
+      const baseY = participant ? participant.y : (lanes.length > 0 ? lanes[0].y : 100);
+
+      // Helper: collect all elk nodes recursively into a flat map (id -> {x, y, width, height})
+      const elkPositions = new Map<string, { x: number; y: number; width: number; height: number }>();
+      const collectPositions = (elkNode: any, offsetX: number, offsetY: number) => {
+        const absX = (elkNode.x || 0) + offsetX;
+        const absY = (elkNode.y || 0) + offsetY;
+        elkPositions.set(elkNode.id, {
+          x: absX,
+          y: absY,
+          width: elkNode.width || 0,
+          height: elkNode.height || 0,
+        });
+        if (elkNode.children) {
+          elkNode.children.forEach((child: any) => collectPositions(child, absX, absY));
+        }
+      };
+      collectPositions(layoutResult, baseX, baseY);
+
+      // Resize participant to fit ELK result
+      if (participant && layoutResult.width && layoutResult.height) {
+        const newWidth = (layoutResult.width || 800) + 60;
+        const newHeight = (layoutResult.height || 400) + 40;
+        if (Math.abs(newWidth - participant.width) > 1 || Math.abs(newHeight - participant.height) > 1) {
+          modeling.resizeShape(participant, {
+            x: participant.x,
+            y: participant.y,
+            width: Math.max(newWidth, participant.width),
+            height: Math.max(newHeight, participant.height),
+          });
+        }
+      }
+
+      // Resize and reposition lanes
+      if (lanes.length > 0) {
+        lanes.forEach((lane) => {
+          const elkLane = elkPositions.get(lane.id);
+          if (!elkLane) return;
+          const freshLane = elementRegistry.get(lane.id);
+          if (!freshLane) return;
+
+          const newBounds = {
+            x: participant ? participant.x + 30 : elkLane.x,
+            y: elkLane.y,
+            width: participant ? (participant.width || 800) - 30 : elkLane.width,
+            height: elkLane.height,
+          };
+
+          // Resize lane
+          if (
+            Math.abs(newBounds.width - freshLane.width) > 1 ||
+            Math.abs(newBounds.height - freshLane.height) > 1 ||
+            Math.abs(newBounds.x - freshLane.x) > 1 ||
+            Math.abs(newBounds.y - freshLane.y) > 1
+          ) {
+            modeling.resizeShape(freshLane, newBounds);
+          }
+        });
+      }
+
+      // Move flow nodes to ELK-computed positions
+      flowNodes.forEach((node) => {
+        const elkPos = elkPositions.get(node.id);
+        if (!elkPos) return;
+
+        const freshNode = elementRegistry.get(node.id);
+        if (!freshNode) return;
+
+        const delta = {
+          x: elkPos.x - freshNode.x,
+          y: elkPos.y - freshNode.y,
+        };
+
+        if (Math.abs(delta.x) > 0.5 || Math.abs(delta.y) > 0.5) {
+          const lane = laneByNodeId.get(node.id);
+          const freshLane = lane ? elementRegistry.get(lane.id) : undefined;
+          modeling.moveShape(freshNode, delta, freshLane || undefined);
+        }
+      });
+
+      // Update connection waypoints
+      const elkEdgeMap = new Map<string, any>();
+      const collectEdges = (elkNode: any) => {
+        if (elkNode.edges) {
+          elkNode.edges.forEach((edge: any) => elkEdgeMap.set(edge.id, edge));
+        }
+        if (elkNode.children) {
+          elkNode.children.forEach((child: any) => collectEdges(child));
+        }
+      };
+      collectEdges(layoutResult);
+
+      sequenceConnections.forEach((connection) => {
+        try {
+          const elkEdge = elkEdgeMap.get(connection.id);
+          if (elkEdge && elkEdge.sections && elkEdge.sections.length > 0) {
+            // ELK provides edge routes via sections
+            const section = elkEdge.sections[0];
+            const waypoints: Array<{ x: number; y: number }> = [];
+            if (section.startPoint) {
+              waypoints.push({ x: section.startPoint.x + baseX, y: section.startPoint.y + baseY });
+            }
+            if (section.bendPoints) {
+              section.bendPoints.forEach((bp: any) => {
+                waypoints.push({ x: bp.x + baseX, y: bp.y + baseY });
+              });
+            }
+            if (section.endPoint) {
+              waypoints.push({ x: section.endPoint.x + baseX, y: section.endPoint.y + baseY });
+            }
+            if (waypoints.length >= 2) {
+              modeling.updateWaypoints(connection, waypoints);
+              return;
+            }
+          }
+
+          // Fallback: use bpmn-js layouter
+          const freshConn = elementRegistry.get(connection.id);
+          if (freshConn) {
+            const wp = layouter.layoutConnection(freshConn, {
+              connectionStart: freshConn.source,
+              connectionEnd: freshConn.target,
+            });
+            if (Array.isArray(wp) && wp.length >= 2) {
+              modeling.updateWaypoints(freshConn, wp);
+            }
+          }
+        } catch (error) {
+          console.warn('Falha ao atualizar waypoints de fluxo:', error);
+        }
+      });
+
+      canvas.zoom('fit-viewport', 'auto');
+      scheduleVisualRefresh();
+
+      const report = calculateQualityReport();
+      setQualityReport(report);
+      setQualityDetailsOpen(false);
+      setErrors([]);
+    } catch (err: any) {
+      console.error('ELK layout error, falling back to manual arrange:', err);
+      // Fallback to the original auto-arrange if ELK fails
+      handleAutoArrange();
+    }
+  }, [calculateQualityReport, handleAutoArrange, scheduleVisualRefresh]);
 
   const runExportWithQualityGate = useCallback(async (action: () => Promise<void>) => {
     const report = calculateQualityReport();
@@ -2147,7 +2581,7 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
           </button>
           <button
             type="button"
-            onClick={handleAutoArrange}
+            onClick={handleElkAutoArrange}
             disabled={readOnly}
             title="Distribuir automaticamente os quadros por fluxo e por lane"
             aria-label="Distribuir automaticamente os quadros por fluxo e por lane"
