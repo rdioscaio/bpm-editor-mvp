@@ -1819,85 +1819,48 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
       );
 
       // --- Resolve lane for each flow node ---
-      const resolveLaneForNode = (node: any) => {
+      const resolveLaneForNode = (node: any): { lane: any; laneIndex: number } => {
+        let lane: any = null;
         if (node.parent?.businessObject && is(node.parent.businessObject, 'bpmn:Lane')) {
-          return node.parent;
+          lane = node.parent;
+        } else if (lanes.length > 0) {
+          const centerY = (node.y || 0) + ((node.height || 0) / 2);
+          lane = lanes.find((l) => centerY >= l.y && centerY <= l.y + l.height) || lanes[0];
         }
-        if (lanes.length === 0) return null;
-        const centerY = (node.y || 0) + ((node.height || 0) / 2);
-        const containingLane = lanes.find((lane) => centerY >= lane.y && centerY <= lane.y + lane.height);
-        return containingLane || lanes[0];
+        const laneIndex = lane ? lanes.indexOf(lane) : 0;
+        return { lane, laneIndex: Math.max(0, laneIndex) };
       };
 
       const laneByNodeId = new Map<string, any>();
+      const laneIndexByNodeId = new Map<string, number>();
       flowNodes.forEach((node) => {
-        laneByNodeId.set(node.id, resolveLaneForNode(node));
+        const { lane, laneIndex } = resolveLaneForNode(node);
+        laneByNodeId.set(node.id, lane);
+        laneIndexByNodeId.set(node.id, laneIndex);
       });
 
-      // --- Build ELK graph ---
+      // --- Build FLAT ELK graph with partitions ---
       const elk = new ELK();
 
-      // Build lane group children: each lane is a group node containing its flow nodes
-      const laneChildren: any[] = [];
-      const laneNodeMap = new Map<string, any[]>(); // laneId -> elk child nodes
+      // Constants for layout
+      const LANE_LABEL_WIDTH = 30; // space for rotated lane labels on the left
+      const LANE_PADDING_TOP = 40;
+      const LANE_PADDING_BOTTOM = 30;
+      const LANE_PADDING_LEFT = 40;
+      const LANE_PADDING_RIGHT = 40;
+      const MIN_LANE_HEIGHT = 120;
 
-      // Group flow nodes by lane
-      const nodesPerLane = new Map<string, any[]>();
-      flowNodes.forEach((node) => {
-        const lane = laneByNodeId.get(node.id);
-        const laneKey = lane?.id || '__default__';
-        const list = nodesPerLane.get(laneKey) || [];
-        list.push(node);
-        nodesPerLane.set(laneKey, list);
-      });
+      // All nodes are flat children of root, each with a partition constraint
+      const elkChildren = flowNodes.map((node) => ({
+        id: node.id,
+        width: node.width || 120,
+        height: node.height || 80,
+        layoutOptions: lanes.length > 0
+          ? { 'elk.partitioning.partition': String(laneIndexByNodeId.get(node.id) ?? 0) }
+          : {},
+      }));
 
-      // Build ELK children for each lane
-      if (lanes.length > 0) {
-        lanes.forEach((lane) => {
-          const laneFlowNodes = nodesPerLane.get(lane.id) || [];
-          const elkLaneChildren = laneFlowNodes.map((node) => ({
-            id: node.id,
-            width: node.width || 120,
-            height: node.height || 80,
-          }));
-          laneNodeMap.set(lane.id, elkLaneChildren);
-
-          laneChildren.push({
-            id: lane.id,
-            layoutOptions: {
-              'elk.padding': '[top=50,left=30,bottom=30,right=30]',
-            },
-            children: elkLaneChildren,
-            edges: [],
-          });
-        });
-
-        // Nodes not in any known lane go into a default group
-        const defaultNodes = nodesPerLane.get('__default__') || [];
-        if (defaultNodes.length > 0) {
-          const elkDefaultChildren = defaultNodes.map((node) => ({
-            id: node.id,
-            width: node.width || 120,
-            height: node.height || 80,
-          }));
-          laneChildren.push({
-            id: '__default_lane__',
-            children: elkDefaultChildren,
-            edges: [],
-          });
-        }
-      } else {
-        // No lanes: all flow nodes are direct children of root
-        flowNodes.forEach((node) => {
-          laneChildren.push({
-            id: node.id,
-            width: node.width || 120,
-            height: node.height || 80,
-          });
-        });
-      }
-
-      // Build ELK edges from sequence connections
+      // All edges at root level (flat structure = no cross-hierarchy issues)
       const elkEdges = sequenceConnections
         .filter((conn) => {
           const sourceId = conn.source?.id;
@@ -1910,159 +1873,213 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
           targets: [conn.target.id],
         }));
 
-      // Root graph: participant or virtual root
-      const rootId = participant?.id || '__elk_root__';
       const elkGraph: any = {
-        id: rootId,
+        id: '__elk_root__',
         layoutOptions: {
           'elk.algorithm': 'layered',
           'elk.direction': 'RIGHT',
-          'elk.layered.spacing.nodeNodeBetweenLayers': '200',
-          'elk.layered.spacing.edgeNodeBetweenLayers': '40',
-          'elk.spacing.nodeNode': '40',
+          'elk.layered.spacing.nodeNodeBetweenLayers': '180',
+          'elk.layered.spacing.edgeNodeBetweenLayers': '30',
+          'elk.spacing.nodeNode': '50',
           'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
           'elk.edgeRouting': 'ORTHOGONAL',
           'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+          ...(lanes.length > 0 ? {
+            'elk.partitioning.activate': 'true',
+          } : {}),
         },
-        children: laneChildren,
+        children: elkChildren,
         edges: elkEdges,
       };
 
       // --- Run ELK layout ---
       const layoutResult = await elk.layout(elkGraph);
 
-      // --- Map ELK positions back to bpmn-js elements ---
-      // Determine base offset (participant or first lane position)
-      const baseX = participant ? participant.x + 30 : (lanes.length > 0 ? lanes[0].x + 30 : 100);
-      const baseY = participant ? participant.y : (lanes.length > 0 ? lanes[0].y : 100);
+      if (!layoutResult.children || layoutResult.children.length === 0) {
+        throw new Error('ELK returned no positioned children');
+      }
 
-      // Helper: collect all elk nodes recursively into a flat map (id -> {x, y, width, height})
+      // --- Collect ELK positions into flat map ---
       const elkPositions = new Map<string, { x: number; y: number; width: number; height: number }>();
-      const collectPositions = (elkNode: any, offsetX: number, offsetY: number) => {
-        const absX = (elkNode.x || 0) + offsetX;
-        const absY = (elkNode.y || 0) + offsetY;
-        elkPositions.set(elkNode.id, {
-          x: absX,
-          y: absY,
-          width: elkNode.width || 0,
-          height: elkNode.height || 0,
+      layoutResult.children.forEach((child: any) => {
+        elkPositions.set(child.id, {
+          x: child.x || 0,
+          y: child.y || 0,
+          width: child.width || 0,
+          height: child.height || 0,
         });
-        if (elkNode.children) {
-          elkNode.children.forEach((child: any) => collectPositions(child, absX, absY));
-        }
-      };
-      collectPositions(layoutResult, baseX, baseY);
-
-      // Resize participant to fit ELK result
-      if (participant && layoutResult.width && layoutResult.height) {
-        const newWidth = (layoutResult.width || 800) + 60;
-        const newHeight = (layoutResult.height || 400) + 40;
-        if (Math.abs(newWidth - participant.width) > 1 || Math.abs(newHeight - participant.height) > 1) {
-          modeling.resizeShape(participant, {
-            x: participant.x,
-            y: participant.y,
-            width: Math.max(newWidth, participant.width),
-            height: Math.max(newHeight, participant.height),
-          });
-        }
-      }
-
-      // Resize and reposition lanes
-      if (lanes.length > 0) {
-        lanes.forEach((lane) => {
-          const elkLane = elkPositions.get(lane.id);
-          if (!elkLane) return;
-          const freshLane = elementRegistry.get(lane.id);
-          if (!freshLane) return;
-
-          const newBounds = {
-            x: participant ? participant.x + 30 : elkLane.x,
-            y: elkLane.y,
-            width: participant ? (participant.width || 800) - 30 : elkLane.width,
-            height: elkLane.height,
-          };
-
-          // Resize lane
-          if (
-            Math.abs(newBounds.width - freshLane.width) > 1 ||
-            Math.abs(newBounds.height - freshLane.height) > 1 ||
-            Math.abs(newBounds.x - freshLane.x) > 1 ||
-            Math.abs(newBounds.y - freshLane.y) > 1
-          ) {
-            modeling.resizeShape(freshLane, newBounds);
-          }
-        });
-      }
-
-      // Move flow nodes to ELK-computed positions
-      flowNodes.forEach((node) => {
-        const elkPos = elkPositions.get(node.id);
-        if (!elkPos) return;
-
-        const freshNode = elementRegistry.get(node.id);
-        if (!freshNode) return;
-
-        const delta = {
-          x: elkPos.x - freshNode.x,
-          y: elkPos.y - freshNode.y,
-        };
-
-        if (Math.abs(delta.x) > 0.5 || Math.abs(delta.y) > 0.5) {
-          const lane = laneByNodeId.get(node.id);
-          const freshLane = lane ? elementRegistry.get(lane.id) : undefined;
-          modeling.moveShape(freshNode, delta, freshLane || undefined);
-        }
       });
 
-      // Update connection waypoints
-      const elkEdgeMap = new Map<string, any>();
-      const collectEdges = (elkNode: any) => {
-        if (elkNode.edges) {
-          elkNode.edges.forEach((edge: any) => elkEdgeMap.set(edge.id, edge));
-        }
-        if (elkNode.children) {
-          elkNode.children.forEach((child: any) => collectEdges(child));
-        }
-      };
-      collectEdges(layoutResult);
-
-      sequenceConnections.forEach((connection) => {
-        try {
-          const elkEdge = elkEdgeMap.get(connection.id);
-          if (elkEdge && elkEdge.sections && elkEdge.sections.length > 0) {
-            // ELK provides edge routes via sections
-            const section = elkEdge.sections[0];
-            const waypoints: Array<{ x: number; y: number }> = [];
-            if (section.startPoint) {
-              waypoints.push({ x: section.startPoint.x + baseX, y: section.startPoint.y + baseY });
+      // --- Compute lane bands from partition results ---
+      // For each lane, find the min/max Y of its nodes to determine lane vertical extent
+      const laneBands: Array<{ laneIndex: number; minY: number; maxY: number; maxNodeBottom: number }> = [];
+      if (lanes.length > 0) {
+        for (let i = 0; i < lanes.length; i++) {
+          let minY = Infinity;
+          let maxY = -Infinity;
+          flowNodes.forEach((node) => {
+            if (laneIndexByNodeId.get(node.id) === i) {
+              const pos = elkPositions.get(node.id);
+              if (pos) {
+                minY = Math.min(minY, pos.y);
+                maxY = Math.max(maxY, pos.y + pos.height);
+              }
             }
-            if (section.bendPoints) {
-              section.bendPoints.forEach((bp: any) => {
-                waypoints.push({ x: bp.x + baseX, y: bp.y + baseY });
-              });
-            }
-            if (section.endPoint) {
-              waypoints.push({ x: section.endPoint.x + baseX, y: section.endPoint.y + baseY });
-            }
-            if (waypoints.length >= 2) {
-              modeling.updateWaypoints(connection, waypoints);
-              return;
-            }
+          });
+          if (minY === Infinity) {
+            // Lane has no nodes — give it a default band
+            minY = 0;
+            maxY = MIN_LANE_HEIGHT;
           }
+          laneBands.push({ laneIndex: i, minY, maxY, maxNodeBottom: maxY });
+        }
+      }
 
-          // Fallback: use bpmn-js layouter
-          const freshConn = elementRegistry.get(connection.id);
-          if (freshConn) {
-            const wp = layouter.layoutConnection(freshConn, {
-              connectionStart: freshConn.source,
-              connectionEnd: freshConn.target,
-            });
-            if (Array.isArray(wp) && wp.length >= 2) {
-              modeling.updateWaypoints(freshConn, wp);
+      // --- Compute total layout dimensions ---
+      let totalElkWidth = layoutResult.width || 800;
+      let totalElkHeight = 0;
+
+      // Compute lane heights with padding
+      const laneHeights: number[] = [];
+      if (lanes.length > 0) {
+        laneBands.forEach((band) => {
+          const contentHeight = band.maxY - band.minY;
+          const laneHeight = Math.max(MIN_LANE_HEIGHT, contentHeight + LANE_PADDING_TOP + LANE_PADDING_BOTTOM);
+          laneHeights.push(laneHeight);
+          totalElkHeight += laneHeight;
+        });
+      } else {
+        totalElkHeight = (layoutResult.height || 400);
+      }
+
+      // --- Determine base position (where the pool starts) ---
+      const baseX = participant ? participant.x : (lanes.length > 0 ? lanes[0].x - LANE_LABEL_WIDTH : 100);
+      const baseY = participant ? participant.y : (lanes.length > 0 ? lanes[0].y : 100);
+      const contentStartX = baseX + LANE_LABEL_WIDTH; // after lane label column
+
+      // --- Resize participant to fit content ---
+      const poolWidth = totalElkWidth + LANE_LABEL_WIDTH + LANE_PADDING_LEFT + LANE_PADDING_RIGHT + 60;
+      const poolHeight = totalElkHeight + 20;
+
+      if (participant) {
+        modeling.resizeShape(participant, {
+          x: baseX,
+          y: baseY,
+          width: Math.max(poolWidth, 800),
+          height: Math.max(poolHeight, 300),
+        });
+      }
+
+      // --- Resize lanes to computed bands ---
+      if (lanes.length > 0) {
+        let cumulativeY = baseY;
+        const freshParticipant = participant ? elementRegistry.get(participant.id) : null;
+        const laneWidth = freshParticipant ? freshParticipant.width - LANE_LABEL_WIDTH : Math.max(poolWidth - LANE_LABEL_WIDTH, 700);
+
+        for (let i = 0; i < lanes.length; i++) {
+          const freshLane = elementRegistry.get(lanes[i].id);
+          if (!freshLane) continue;
+
+          const laneH = laneHeights[i] || MIN_LANE_HEIGHT;
+          modeling.resizeShape(freshLane, {
+            x: baseX + LANE_LABEL_WIDTH,
+            y: cumulativeY,
+            width: laneWidth,
+            height: laneH,
+          });
+
+          cumulativeY += laneH;
+        }
+      }
+
+      // --- Move flow nodes to final positions ---
+      // We need to offset ELK positions into absolute BPMN coordinates
+      // ELK positions are relative to the ELK root; we map them into lane bands
+      if (lanes.length > 0) {
+        // For each lane, compute the Y offset to center its nodes in the resized lane
+        let cumulativeY = baseY;
+
+        for (let i = 0; i < lanes.length; i++) {
+          const band = laneBands[i];
+          const laneH = laneHeights[i] || MIN_LANE_HEIGHT;
+          const laneCenterY = cumulativeY + laneH / 2;
+
+          // Content center in ELK space for this partition
+          const elkContentCenterY = (band.minY + band.maxY) / 2;
+
+          flowNodes.forEach((node) => {
+            if (laneIndexByNodeId.get(node.id) !== i) return;
+            const elkPos = elkPositions.get(node.id);
+            if (!elkPos) return;
+
+            const freshNode = elementRegistry.get(node.id);
+            if (!freshNode) return;
+
+            // Center the node group vertically in the lane
+            const nodeElkCenterY = elkPos.y + elkPos.height / 2;
+            const offsetFromCenter = nodeElkCenterY - elkContentCenterY;
+            const targetY = laneCenterY + offsetFromCenter - freshNode.height / 2;
+            const targetX = contentStartX + LANE_PADDING_LEFT + elkPos.x;
+
+            const delta = {
+              x: targetX - freshNode.x,
+              y: targetY - freshNode.y,
+            };
+
+            if (Math.abs(delta.x) > 0.5 || Math.abs(delta.y) > 0.5) {
+              const freshLane = elementRegistry.get(lanes[i].id);
+              modeling.moveShape(freshNode, delta, freshLane || undefined);
             }
+          });
+
+          cumulativeY += laneH;
+        }
+      } else {
+        // No lanes: just offset from base
+        flowNodes.forEach((node) => {
+          const elkPos = elkPositions.get(node.id);
+          if (!elkPos) return;
+
+          const freshNode = elementRegistry.get(node.id);
+          if (!freshNode) return;
+
+          const targetX = contentStartX + LANE_PADDING_LEFT + elkPos.x;
+          const targetY = baseY + 20 + elkPos.y;
+
+          const delta = {
+            x: targetX - freshNode.x,
+            y: targetY - freshNode.y,
+          };
+
+          if (Math.abs(delta.x) > 0.5 || Math.abs(delta.y) > 0.5) {
+            modeling.moveShape(freshNode, delta);
+          }
+        });
+      }
+
+      // --- Route connections using bpmn-js layouter (most reliable after repositioning) ---
+      // Sort by distance: shorter connections first for cleaner routing
+      const sortedConnections = [...sequenceConnections]
+        .filter((c) => c.source && c.target && nodeIds.has(c.source.id) && nodeIds.has(c.target.id))
+        .sort((a, b) => {
+          const distA = Math.abs((a.source?.x || 0) - (a.target?.x || 0)) + Math.abs((a.source?.y || 0) - (a.target?.y || 0));
+          const distB = Math.abs((b.source?.x || 0) - (b.target?.x || 0)) + Math.abs((b.source?.y || 0) - (b.target?.y || 0));
+          return distA - distB;
+        });
+
+      sortedConnections.forEach((connection) => {
+        try {
+          const freshConn = elementRegistry.get(connection.id);
+          if (!freshConn) return;
+          const wp = layouter.layoutConnection(freshConn, {
+            connectionStart: freshConn.source,
+            connectionEnd: freshConn.target,
+          });
+          if (Array.isArray(wp) && wp.length >= 2) {
+            modeling.updateWaypoints(freshConn, wp);
           }
         } catch (error) {
-          console.warn('Falha ao atualizar waypoints de fluxo:', error);
+          console.warn('ELK: failed to route connection:', connection.id, error);
         }
       });
 
@@ -2075,7 +2092,6 @@ export const BpmnEditor: React.FC<BpmnEditorProps> = ({
       setErrors([]);
     } catch (err: any) {
       console.error('ELK layout error, falling back to manual arrange:', err);
-      // Fallback to the original auto-arrange if ELK fails
       handleAutoArrange();
     }
   }, [calculateQualityReport, handleAutoArrange, scheduleVisualRefresh]);
